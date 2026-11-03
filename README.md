@@ -12,10 +12,10 @@ works best for code.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/front-page-dark.png">
-  <img alt="The Bots panel with five colorful blob avatars and a list of recent threads." src="assets/screenshots/front-page-light.png">
+  <img alt="The full BB window with a navigation rail, five colorful bot avatars, and a list of recent threads." src="assets/screenshots/front-page-light.png">
 </picture>
 
-<sub>A team of bots with distinct avatars and recent threads. This preview uses sample data and a mock composer.</sub>
+<sub>A team of bots in the BB window. This preview uses sample data and a mock thread sidebar and composer.</sub>
 
 ## Why this exists
 
