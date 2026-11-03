@@ -3,7 +3,7 @@ import { experimental_useSidebarThreadActions } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import { COARSE_POINTER_HEADER_ICON_BUTTON_CLASS } from "@/components/ui/coarse-pointer-sizing";
 import { Icon } from "@/components/ui/icon";
-import { formatRelative } from "@/components/BotRail";
+import { formatRelative } from "@/components/relative-time";
 import { useBotsRpc } from "@/components/use-query";
 import { cn } from "@/lib/utils";
 

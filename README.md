@@ -12,10 +12,10 @@ works best for code.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/front-page-dark.png">
-  <img alt="The Bots panel in BB: a rail of bots on the left, and the selected bot's instructions, composer, and chats on the right." src="assets/screenshots/front-page-light.png">
+  <img alt="The full BB window with a navigation rail, five colorful bot avatars, and a list of recent threads." src="assets/screenshots/front-page-light.png">
 </picture>
 
-<sub>A fleet of bots in the BB sidebar — each with its own instructions, provider, model, and reasoning level.</sub>
+<sub>A team of bots in the BB window. This preview uses sample data and a mock thread sidebar and composer.</sub>
 
 ## Why this exists
 
@@ -45,6 +45,8 @@ With Bots, you can:
 - keep bots without a project for everyday conversations
 - create drafts before making a bot available to chat with
 - keep chat history as normal BB threads
+- choose an animated blob avatar or an emoji for each bot
+- expand a bot in the rail to open recent threads and see their states
 
 A bot is not a separate chat app. It lives in BB and uses BB's existing thread,
 composer, attachment, archive, and delete experience.
@@ -63,19 +65,22 @@ Install directly from this repository:
 bb plugin install git:https://github.com/prakashchokalingam/bb-plugin-bots.git
 ```
 
-Requires BB `>=0.39.0`.
+Requires BB `>=0.48.1`.
 
 ## Create your first bot
 
 1. Open **Bots** from the BB sidebar.
 2. Click **New bot**.
 3. Give the bot a name and write its instructions.
+   Select the avatar to choose a shape, color, or emoji.
 4. Choose its provider, model, and reasoning level.
 5. Optionally select a project if the bot should work with a repository.
 6. Click **Publish**.
 7. Start a chat.
 
-<img alt="The Set up bot form: name, emoji, instructions, provider, model, reasoning level and project, with Publish bot disabled until the required fields are filled." src="assets/screenshots/bot-creation-light.png">
+<img alt="The avatar picker with blob shapes, preset colors, and a custom color field." src="assets/screenshots/avatar-picker-light.png">
+
+<sub>Choose a blob shape and color, or select an emoji. This preview uses sample data.</sub>
 
 <sub>New bots start as drafts. Publish stays disabled until the bot has a name, a provider, and a model.</sub>
 

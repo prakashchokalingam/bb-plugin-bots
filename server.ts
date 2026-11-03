@@ -12,6 +12,7 @@ import {
   MAX_NAME,
   newBotId,
   pickEmoji,
+  randomAvatar,
   renderBotInstructions,
   rowToBot,
   sortChats,
@@ -30,10 +31,13 @@ const ReasoningLevel = z.enum([
   "ultracode",
 ]);
 
+const AvatarSchema = z.object({ version: z.literal(1), type: z.literal("blob"), shape: z.enum(["round", "flower", "star", "cloud", "heart", "shield", "hexagon", "sun", "triangle"]), color: z.string().regex(/^#[0-9a-fA-F]{6}$/) }).strict();
+
 const BotSchema = z.object({
   id: z.string(),
   name: z.string(),
   emoji: z.string(),
+  avatar: AvatarSchema.nullable().optional(),
   instructions: z.string(),
   providerId: z.string(),
   model: z.string(),
@@ -51,6 +55,7 @@ const BotPatchSchema = z
   .object({
     name: z.string().max(MAX_NAME),
     emoji: z.string().min(1).max(16),
+    avatar: AvatarSchema.nullable(),
     instructions: z.string().max(MAX_INSTRUCTIONS),
     providerId: z.string(),
     model: z.string(),
@@ -241,6 +246,7 @@ export default async function plugin(bb: BbPluginApi) {
     // The DEFAULT backfills every existing row as published, so there's no
     // separate backfill statement or code path.
     `ALTER TABLE bots ADD COLUMN status TEXT NOT NULL DEFAULT 'published'`,
+    `ALTER TABLE bots ADD COLUMN avatar_json TEXT`,
   ]);
 
   // contributeInstructions is synchronous and sits on the thread-start path,
@@ -297,6 +303,7 @@ export default async function plugin(bb: BbPluginApi) {
         id: newBotId(),
         name: "",
         emoji: pickEmoji(),
+        avatar: randomAvatar(),
         instructions: "",
         providerId: "",
         model: "",
@@ -308,8 +315,8 @@ export default async function plugin(bb: BbPluginApi) {
       };
       db.prepare(
         `INSERT INTO bots (id, name, emoji, instructions, provider_id, model,
-                           reasoning_level, project_id, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                           reasoning_level, project_id, status, created_at, updated_at, avatar_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         bot.id,
         bot.name,
@@ -322,6 +329,7 @@ export default async function plugin(bb: BbPluginApi) {
         bot.status,
         bot.createdAt,
         bot.updatedAt,
+        JSON.stringify(bot.avatar),
       );
       botsById.set(bot.id, bot);
       announce();
@@ -337,6 +345,7 @@ export default async function plugin(bb: BbPluginApi) {
         ...existing,
         ...(patch.name !== undefined ? { name: patch.name.trim() } : {}),
         ...(patch.emoji !== undefined ? { emoji: patch.emoji } : {}),
+        ...(patch.avatar !== undefined ? { avatar: patch.avatar } : {}),
         ...(patch.instructions !== undefined
           ? { instructions: clampInstructions(patch.instructions) }
           : {}),
@@ -355,7 +364,7 @@ export default async function plugin(bb: BbPluginApi) {
       db.prepare(
         `UPDATE bots
             SET name = ?, emoji = ?, instructions = ?, provider_id = ?,
-                model = ?, reasoning_level = ?, project_id = ?, updated_at = ?
+                model = ?, reasoning_level = ?, project_id = ?, updated_at = ?, avatar_json = ?
           WHERE id = ?`,
       ).run(
         bot.name,
@@ -366,6 +375,7 @@ export default async function plugin(bb: BbPluginApi) {
         bot.reasoningLevel,
         bot.projectId,
         bot.updatedAt,
+        bot.avatar ? JSON.stringify(bot.avatar) : null,
         bot.id,
       );
       botsById.set(bot.id, bot);

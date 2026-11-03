@@ -57,10 +57,26 @@ export type ReasoningLevel = (typeof REASONING_LEVELS)[number];
 
 export type BotStatus = "draft" | "published";
 
+export const AVATAR_SHAPES = ["round", "flower", "star", "cloud", "heart", "shield", "hexagon", "sun", "triangle"] as const;
+export const AVATAR_COLORS = ["#a78bfa", "#60a5fa", "#fb927c", "#4ade80", "#fbbf24", "#f472b6"] as const;
+export type BlobAvatar = { version: 1; type: "blob"; shape: typeof AVATAR_SHAPES[number]; color: string };
+export function randomAvatar(): BlobAvatar {
+  return { version: 1, type: "blob", shape: AVATAR_SHAPES[Math.floor(Math.random() * AVATAR_SHAPES.length)]!, color: AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)]! };
+}
+export function parseAvatar(value: string | null | undefined): BlobAvatar | null {
+  if (!value) return null;
+  try {
+    const v = JSON.parse(value);
+    if (v?.version === 1 && v.type === "blob" && AVATAR_SHAPES.includes(v.shape) && typeof v.color === "string" && /^#[0-9a-fA-F]{6}$/.test(v.color) && Object.keys(v).every(key => ["version", "type", "shape", "color"].includes(key))) return v;
+  } catch { /* Fall back to the stored emoji. */ }
+  return null;
+}
+
 export interface Bot {
   id: string;
   name: string;
   emoji: string;
+  avatar?: BlobAvatar | null;
   instructions: string;
   providerId: string;
   model: string;
@@ -251,6 +267,7 @@ export interface BotRow {
   id: string;
   name: string;
   emoji: string;
+  avatar_json?: string | null;
   instructions: string;
   provider_id: string;
   model: string;
@@ -288,6 +305,7 @@ export function rowToBot(row: BotRow): Bot {
     id: row.id,
     name: row.name,
     emoji: row.emoji,
+    avatar: parseAvatar(row.avatar_json),
     instructions: row.instructions,
     providerId: row.provider_id,
     model: row.model,

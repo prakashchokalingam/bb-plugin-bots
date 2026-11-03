@@ -130,6 +130,16 @@ describe("createBot / saveBot / publishBot", () => {
     });
   });
 
+  it("persists a custom avatar and rejects invalid colors", async () => {
+    const { botId } = await host.harness.behavior.callRpc("createBot", null) as { botId: string };
+    const avatar = { version: 1, type: "blob", shape: "triangle", color: "#123abc" };
+    await host.harness.behavior.callRpc("saveBot", { botId, patch: { avatar } });
+    expect(await host.harness.behavior.callRpc("getBot", { botId })).toMatchObject({ bot: { avatar } });
+    await expect(host.harness.behavior.callRpc("saveBot", { botId, patch: { avatar: { ...avatar, color: "red" } } })).rejects.toThrow();
+    await host.harness.behavior.callRpc("saveBot", { botId, patch: { avatar: null, emoji: "🦉" } });
+    expect(await host.harness.behavior.callRpc("getBot", { botId })).toMatchObject({ bot: { avatar: null, emoji: "🦉" } });
+  });
+
   it("saveBot applies only the given keys and never touches status", async () => {
     const { botId } = (await host.harness.behavior.callRpc(
       "createBot",
@@ -298,6 +308,28 @@ describe("startChat", () => {
 });
 
 describe("persistence", () => {
+  it("upgrades a pre-avatar database without changing existing emoji", async () => {
+    const legacy = makeHost();
+    const db = legacy.bb.storage.database();
+    legacy.bb.storage.migrate(db, [
+      `CREATE TABLE IF NOT EXISTS bots (id TEXT PRIMARY KEY, name TEXT NOT NULL, emoji TEXT NOT NULL, instructions TEXT NOT NULL, provider_id TEXT NOT NULL, model TEXT NOT NULL, reasoning_level TEXT, project_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
+      `CREATE TABLE IF NOT EXISTS bot_threads (thread_id TEXT PRIMARY KEY, bot_id TEXT NOT NULL, created_at INTEGER NOT NULL)`,
+      `CREATE INDEX IF NOT EXISTS bot_threads_bot_id ON bot_threads(bot_id)`,
+      `ALTER TABLE bots ADD COLUMN status TEXT NOT NULL DEFAULT 'published'`,
+    ]);
+    db.prepare(`INSERT INTO bots (id, name, emoji, instructions, provider_id, model, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run("legacy", "Legacy", "🦉", "Old instructions", "codex", "model", "published", 1, 1);
+    await plugin(legacy.bb);
+    expect(await legacy.harness.behavior.callRpc("getBot", { botId: "legacy" })).toMatchObject({ bot: { emoji: "🦉", avatar: null, instructions: "Old instructions" } });
+  });
+
+  it("falls back to emoji for stored avatar data with unknown fields", async () => {
+    const { botId } = await host.harness.behavior.callRpc("createBot", null) as { botId: string };
+    const db = host.bb.storage.database();
+    db.prepare("UPDATE bots SET avatar_json = ? WHERE id = ?").run(JSON.stringify({ version: 1, type: "blob", shape: "round", color: "#123abc", extra: true }), botId);
+    const reloaded = await host.harness.lifecycle.reload(plugin);
+    expect(await reloaded.harness.behavior.callRpc("getBot", { botId })).toMatchObject({ bot: { avatar: null } });
+  });
+
   it("keeps bots and their thread mapping across a reload", async () => {
     const botId = await createPublishedBot();
     const { threadId } = (await host.harness.behavior.callRpc("startChat", {

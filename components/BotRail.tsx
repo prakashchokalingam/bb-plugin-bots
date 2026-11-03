@@ -1,9 +1,12 @@
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { useBbNavigate } from "@get-bb/plugin-sdk/app";
+import { useBbNavigate, experimental_useSidebarThreads } from "@get-bb/plugin-sdk/app";
+import { toast } from "sonner";
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { COARSE_POINTER_HEADER_ICON_BUTTON_CLASS } from "@/components/ui/coarse-pointer-sizing";
 import { Icon } from "@/components/ui/icon";
+import { formatRelative, useRelativeClock } from "@/components/relative-time";
 import { BotAvatar } from "@/components/BotAvatar";
 import { useBotsRpc, useQuery } from "@/components/use-query";
 import { PANEL_PATH } from "@/components/panel-path";
@@ -11,6 +14,7 @@ import { cn } from "@/lib/utils";
 import { displayName, previewInstructions } from "@/bots";
 
 const WIDTH_KEY = "bots:rail:width";
+const EXPANDED_KEY = "bots:rail:expanded";
 const MIN_WIDTH = 220;
 const MAX_WIDTH = 420;
 const DEFAULT_WIDTH = 260;
@@ -44,29 +48,54 @@ function readStoredWidth(): number {
   return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, parsed));
 }
 
-/**
- * Short relative timestamp for rail rows and the bot page's chat list:
- * "now", "2m", "3h", "5d", then a date.
- */
-export function formatRelative(timestamp: number): string {
-  const diffMs = Date.now() - timestamp;
-  const minute = 60_000;
-  const hour = 60 * minute;
-  const day = 24 * hour;
-  const week = 7 * day;
-  if (diffMs < minute) return "now";
-  if (diffMs < hour) return `${Math.floor(diffMs / minute)}m`;
-  if (diffMs < day) return `${Math.floor(diffMs / hour)}h`;
-  if (diffMs < week) return `${Math.floor(diffMs / day)}d`;
-  return new Date(timestamp).toLocaleDateString();
+function readExpanded(): string[] {
+  try {
+    const value = JSON.parse(safeGetItem(EXPANDED_KEY) ?? "[]");
+    return Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : [];
+  } catch { return []; }
 }
 
-export function BotRail({ selectedBotId }: { selectedBotId: string | null }) {
+function indicatorStyle(indicator: string, status: string): { label: string; className: string } {
+  switch (indicator) {
+    case "waiting-for-input": return { label: "Needs input", className: "bg-warning" };
+    case "unread-error": return { label: "Unread error", className: "bg-destructive" };
+    case "unread-success": return { label: "Unread result", className: "bg-success" };
+    case "runtime": case "background-agent": case "background-command": case "workflow": case "goal": case "plan-mode": case "working-draft":
+      return { label: "Working", className: "bg-primary motion-safe:animate-pulse" };
+    case "none": return { label: "Idle", className: "bg-muted-foreground" };
+    default:
+      if (status === "error") return { label: "Error", className: "bg-destructive" };
+      if (status === "active" || status === "starting" || status === "stopping") return { label: status === "active" ? "Working" : status, className: "bg-primary motion-safe:animate-pulse" };
+      return { label: "Idle", className: "bg-muted-foreground" };
+  }
+}
+
+export function BotRail({ selectedBotId, selectedThreadId = null }: { selectedBotId: string | null; selectedThreadId?: string | null }) {
+  useRelativeClock();
   const rpc = useBotsRpc();
   const navigate = useBbNavigate();
+  const live = experimental_useSidebarThreads();
+  const [expanded, setExpanded] = useState<string[]>(readExpanded);
+  function toggleExpanded(id: string) {
+    setExpanded(current => { const next = current.includes(id) ? current.filter(item => item !== id) : [...current, id]; safeSetItem(EXPANDED_KEY, JSON.stringify(next)); return next; });
+  }
   const { data, error } = useQuery(() => rpc.call("listRail", null), "rail");
   const [width, setWidth] = useState<number>(() => readStoredWidth());
   const [isCreating, setIsCreating] = useState(false);
+  const [menuBotId, setMenuBotId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  async function deleteBot() {
+    if (!deleteTarget || deleting) return;
+    setDeleting(true);
+    try {
+      await rpc.call("deleteBot", { botId: deleteTarget.id });
+      if (selectedBotId === deleteTarget.id) navigate.toPluginPanel(PANEL_PATH, { subPath: "", replace: true });
+      toast.success(`Deleted ${deleteTarget.name}`);
+      setDeleteTarget(null);
+    } catch (cause) { toast.error(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setDeleting(false); }
+  }
 
   // Kept for the resize handle only; nothing here reads the node itself.
   const dragOrigin = useRef<{ startX: number; startWidth: number } | null>(null);
@@ -127,7 +156,7 @@ export function BotRail({ selectedBotId }: { selectedBotId: string | null }) {
           onClick={() => void createBot()}
           className={`${COARSE_POINTER_HEADER_ICON_BUTTON_CLASS} inline-flex items-center justify-center hover:bg-accent disabled:opacity-50`}
         >
-          <Icon name="Plus" aria-hidden />
+          <Icon name="Plus" className="size-4 shrink-0" aria-hidden />
         </button>
       </div>
 
@@ -151,35 +180,39 @@ export function BotRail({ selectedBotId }: { selectedBotId: string | null }) {
             {bots.map((bot) => {
               const isSelected = bot.id === selectedBotId;
               const isDraft = bot.status === "draft";
-              const newestChat = bot.chats[0];
+              const isExpanded = expanded.includes(bot.id);
+              const chats = bot.chats.map(chat => {
+                const thread = live.threads.find(item => item.id === chat.threadId);
+                return { ...chat, title: thread?.title ?? thread?.titleFallback ?? chat.title, updatedAt: thread?.updatedAt ?? chat.updatedAt, indicator: thread?.indicator ?? "unavailable", indicatorLabel: thread?.indicatorLabel ?? null, archived: thread?.isArchived ?? false };
+              }).filter(chat => !chat.archived).sort((a, b) => b.updatedAt - a.updatedAt);
+              const newestChat = chats[0];
               const secondary =
                 newestChat === undefined
                   ? previewInstructions(bot.instructions)
                   : newestChat.title ?? "New chat";
 
               return (
-                <li key={bot.id}>
+                <li key={bot.id} className="relative" onKeyDown={event => { if (event.key === "Escape" && menuBotId === bot.id) { event.stopPropagation(); setMenuBotId(null); } }} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setMenuBotId(null); }}>
                   <div
+                    onContextMenu={event => { event.preventDefault(); setMenuBotId(bot.id); }}
                     className={cn(
-                      "flex items-stretch",
-                      isSelected
-                        ? "border-l-2 border-l-primary bg-accent"
-                        : isDraft
-                          ? "border-l-2 border-dashed border-l-border"
-                          : "border-l-2 border-l-transparent",
+                      "group relative mx-1 mt-1 flex items-stretch rounded-lg transition-colors hover:bg-accent/60",
+                      isSelected && !selectedThreadId ? "bg-accent" : "",
                     )}
                   >
                     <button
                       type="button"
-                      onClick={() =>
-                        navigate.toPluginPanel(PANEL_PATH, { subPath: bot.id })
-                      }
+                      onClick={() => {
+                        if (chats.length > 0) toggleExpanded(bot.id);
+                        navigate.toPluginPanel(PANEL_PATH, { subPath: bot.id });
+                      }}
+                      aria-expanded={chats.length > 0 ? isExpanded : undefined}
                       className={cn(
-                        "flex min-w-0 flex-1 items-center gap-2 px-2 py-2 text-left transition-colors hover:bg-accent",
+                        "bot-rail-trigger flex min-w-0 flex-1 items-center gap-2.5 rounded-l-lg px-2 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                         isDraft ? "text-muted-foreground" : "",
                       )}
                     >
-                      <BotAvatar botId={bot.id} emoji={bot.emoji} size="sm" />
+                      <BotAvatar botId={bot.id} emoji={bot.emoji} avatar={bot.avatar} size="sm" animateOnHover />
                       <span className="min-w-0 flex-1">
                         <span className="flex items-center gap-1.5">
                           <span className="truncate text-sm font-medium">
@@ -193,22 +226,46 @@ export function BotRail({ selectedBotId }: { selectedBotId: string | null }) {
                               DRAFT
                             </Badge>
                           ) : null}
-                          <span className="ml-auto shrink-0 pl-1 text-[10px] text-muted-foreground">
-                            {formatRelative(bot.lastActivityAt)}
-                          </span>
                         </span>
-                        <span className="block truncate text-xs text-muted-foreground">
+                        {!isExpanded && <span className="block truncate text-xs text-muted-foreground">
                           {secondary}
-                        </span>
+                        </span>}
                       </span>
                     </button>
+                    <div className="absolute right-8 top-1/2 z-10 flex -translate-y-1/2 items-center gap-0.5 rounded-md bg-accent px-0.5 opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 max-md:pointer-coarse:pointer-events-auto max-md:pointer-coarse:opacity-100">
+                      <button type="button" aria-label={`Edit ${displayName(bot)}`} onClick={() => navigate.toPluginPanel(PANEL_PATH, { subPath: `${bot.id}/edit` })} className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"><Icon name="Edit" className="size-4 shrink-0" aria-hidden /></button>
+                      <button type="button" aria-label={`New thread for ${displayName(bot)}`} onClick={() => navigate.toPluginPanel(PANEL_PATH, { subPath: `${bot.id}/${isDraft ? "edit" : "new"}` })} className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"><Icon name="Plus" className="size-4 shrink-0" aria-hidden /></button>
+                      <button type="button" aria-label={`More actions for ${displayName(bot)}`} aria-haspopup="menu" aria-expanded={menuBotId === bot.id} onClick={() => setMenuBotId(menuBotId === bot.id ? null : bot.id)} className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"><Icon name="MoreHorizontal" className="size-4 shrink-0" aria-hidden /></button>
+                    </div>
+                    {chats.length > 0 && <button type="button" aria-label={`${isExpanded ? "Collapse" : "Expand"} ${displayName(bot)} threads`} aria-expanded={isExpanded} onClick={() => toggleExpanded(bot.id)} className="mr-1 my-auto inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><Icon name={isExpanded ? "ChevronDown" : "ChevronRight"} className="size-4 shrink-0" aria-hidden /></button>}
                   </div>
+                  {menuBotId === bot.id && <div role="menu" aria-label={`${displayName(bot)} actions`} className="absolute right-2 top-12 z-50 w-36 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md">
+                    <button type="button" role="menuitem" autoFocus onClick={() => { setMenuBotId(null); setDeleteTarget({ id: bot.id, name: displayName(bot) }); }} className="w-full rounded-sm px-2 py-1.5 text-left text-sm text-destructive hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring">Delete bot</button>
+                  </div>}
+                  {isExpanded && chats.length > 0 && <ul className="ml-[25px] mr-1 border-l border-border/70 pl-3 pb-1" aria-label={`${displayName(bot)} recent threads`}>
+                    {chats.slice(0, 3).map(chat => {
+                      const state = indicatorStyle(chat.indicator, chat.status);
+                      const stateLabel = chat.indicatorLabel ?? state.label;
+                      return <li key={chat.threadId}><button type="button" onClick={() => navigate.toPluginPanel(PANEL_PATH, { subPath: `${bot.id}/${chat.threadId}` })} aria-current={selectedThreadId === chat.threadId ? "page" : undefined} className={cn("flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", selectedThreadId === chat.threadId && "bg-accent font-medium text-foreground") }>
+                        <span title={stateLabel} aria-label={stateLabel} role="img" className={cn("size-2 shrink-0 rounded-full", state.className)} />
+                        <span className="min-w-0 flex-1 truncate">{chat.title ?? "New chat"}</span>
+                        <span className="shrink-0 text-xs text-muted-foreground">{formatRelative(chat.updatedAt)}</span>
+                      </button></li>;
+                    })}
+                    {chats.length > 3 && <li><button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring" onClick={() => navigate.toPluginPanel(PANEL_PATH, { subPath: bot.id })}>View all threads <span aria-hidden="true">→</span></button></li>}
+                  </ul>}
                 </li>
               );
             })}
           </ul>
         )}
       </div>
+
+      <Dialog open={deleteTarget !== null} onOpenChange={open => { if (!open && !deleting) setDeleteTarget(null); }}>
+        <DialogContent><DialogHeader><DialogTitle>Delete {deleteTarget?.name}?</DialogTitle><DialogDescription>Its chats stay in BB but stop following these instructions.</DialogDescription></DialogHeader>
+          <DialogFooter><DialogClose asChild><Button variant="outline" disabled={deleting}>Cancel</Button></DialogClose><Button variant="destructive" disabled={deleting} onClick={() => void deleteBot()}>{deleting ? "Deleting…" : "Delete"}</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <div
         onPointerDown={onResizePointerDown}
