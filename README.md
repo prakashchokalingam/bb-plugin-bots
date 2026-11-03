@@ -12,10 +12,10 @@ works best for code.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/front-page-dark.png">
-  <img alt="The Bots panel in BB: a rail of bots on the left, and the selected bot's instructions, composer, and chats on the right." src="assets/screenshots/front-page-light.png">
+  <img alt="The Bots panel with five colorful blob avatars and a list of recent threads." src="assets/screenshots/front-page-light.png">
 </picture>
 
-<sub>A fleet of bots in the BB sidebar — each with its own instructions, provider, model, and reasoning level.</sub>
+<sub>A team of bots with distinct avatars and recent threads. This preview uses sample data and a mock composer.</sub>
 
 ## Why this exists
 
@@ -77,6 +77,10 @@ Requires BB `>=0.48.1`.
 5. Optionally select a project if the bot should work with a repository.
 6. Click **Publish**.
 7. Start a chat.
+
+<img alt="The avatar picker with blob shapes, preset colors, and a custom color field." src="assets/screenshots/avatar-picker-light.png">
+
+<sub>Choose a blob shape and color, or select an emoji. This preview uses sample data.</sub>
 
 <sub>New bots start as drafts. Publish stays disabled until the bot has a name, a provider, and a model.</sub>
 
