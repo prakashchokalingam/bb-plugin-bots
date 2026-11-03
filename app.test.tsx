@@ -3,6 +3,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, waitFor } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { EMOJIS } from "./bots";
+import { formatRelative } from "./components/relative-time";
+
+describe("relative timestamps", () => {
+  it("uses compact relative units for older dates", () => {
+    const now = Date.now();
+    const day = 86_400_000;
+    expect(formatRelative(now - 8 * day)).toBe("1w");
+    expect(formatRelative(now - 45 * day)).toBe("1mo");
+    expect(formatRelative(now - 400 * day)).toBe("1y");
+    expect(formatRelative(now + day)).toBe("now");
+  });
+});
 
 const BOT_WITH_CHATS = {
   id: "bot_1",
@@ -171,6 +183,33 @@ describe("bots nav panel", () => {
     slot.lifecycle.unmount();
   });
 
+  it("opens a bot and expands its threads from the row", async () => {
+    const panel = await loadPanel();
+    const slot = renderSlot(panel, { subPath: "" }, { rpc: RPC });
+    fireEvent.click(await slot.findByText("Pirate"));
+    expect(slot.getByRole("list", { name: "Pirate recent threads" })).toBeTruthy();
+    expect(slot.inspection.navigateCalls).toContainEqual({ method: "toPluginPanel", path: "bots", options: { subPath: "bot_1" } });
+    fireEvent.click(slot.getByLabelText("Collapse Pirate threads"));
+    slot.lifecycle.unmount();
+  });
+
+  it("uses rail actions without toggling and confirms deletion", async () => {
+    const panel = await loadPanel();
+    const slot = renderSlot(panel, { subPath: "" }, { rpc: RPC });
+    fireEvent.click(await slot.findByLabelText("Edit Pirate"));
+    fireEvent.click(slot.getByLabelText("New thread for Pirate"));
+    expect(slot.inspection.navigateCalls).toContainEqual({ method: "toPluginPanel", path: "bots", options: { subPath: "bot_1/edit" } });
+    expect(slot.inspection.navigateCalls).toContainEqual({ method: "toPluginPanel", path: "bots", options: { subPath: "bot_1/new" } });
+    expect(slot.queryByRole("list", { name: "Pirate recent threads" })).toBeNull();
+    fireEvent.contextMenu(slot.getByText("Pirate"));
+    fireEvent.click(slot.getByRole("menuitem", { name: "Delete bot" }));
+    expect(await slot.findByText("Delete Pirate?")).toBeTruthy();
+    expect(slot.inspection.rpcCalls.some(call => call.method === "deleteBot")).toBe(false);
+    fireEvent.click(slot.getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(slot.inspection.rpcCalls).toContainEqual(expect.objectContaining({ method: "deleteBot", input: { botId: "bot_1" } })));
+    slot.lifecycle.unmount();
+  });
+
   it("creates a bot from the rail's new-bot button and routes to its editor", async () => {
     const panel = await loadPanel();
     const slot = renderSlot(panel, { subPath: "" }, { rpc: RPC });
@@ -220,16 +259,17 @@ describe("bots nav panel", () => {
     slot.lifecycle.unmount();
   });
 
-  it("keeps the rail flat — no expand toggle and no duplicated nested chat row", async () => {
+  it("expands recent threads and opens the selected thread", async () => {
     const panel = await loadPanel();
     const slot = renderSlot(panel, { subPath: "" }, { rpc: RPC });
-
-    await slot.findByText("Pirate");
-    expect(slot.queryByLabelText("Expand chats")).toBeNull();
-    expect(slot.queryByLabelText("Collapse chats")).toBeNull();
-    // "Ahoy there" is the newest-chat preview on the bot's own row; a nested
-    // chat row used to duplicate it directly underneath.
-    expect(slot.getAllByText("Ahoy there")).toHaveLength(1);
+    const toggle = await slot.findByLabelText("Expand Pirate threads");
+    fireEvent.click(toggle);
+    const list = slot.getByRole("list", { name: "Pirate recent threads" });
+    expect(list.textContent).toContain("Ahoy there");
+    fireEvent.click(list.querySelector("button")!);
+    expect(slot.inspection.navigateCalls).toContainEqual({ method: "toPluginPanel", path: "bots", options: { subPath: "bot_1/thr_new" } });
+    fireEvent.click(slot.getByLabelText("Collapse Pirate threads"));
+    expect(slot.queryByRole("list", { name: "Pirate recent threads" })).toBeNull();
     slot.lifecycle.unmount();
   });
 
@@ -481,6 +521,34 @@ describe("bots nav panel", () => {
     slot.lifecycle.unmount();
   });
 
+  it("selects an extra shape from the compact popup", async () => {
+    const panel = await loadPanel();
+    const slot = renderSlot(panel, { subPath: "bot_1/edit" }, { rpc: RPC });
+    fireEvent.click(await slot.findByLabelText("Change icon"));
+    fireEvent.click(await slot.findByRole("button", { name: "Blob" }));
+    fireEvent.click(slot.getByRole("button", { name: "More shapes" }));
+    fireEvent.click(slot.getByRole("button", { name: "triangle" }));
+    expect(slot.queryByRole("group", { name: "More shapes" })).toBeNull();
+    expect(slot.getByRole("button", { name: "triangle" }).getAttribute("aria-pressed")).toBe("true");
+    expect(slot.getByRole("button", { name: "More shapes" }).getAttribute("aria-expanded")).toBe("false");
+    slot.lifecycle.unmount();
+  });
+
+  it("selects a blob and saves a custom color", async () => {
+    const panel = await loadPanel();
+    const slot = renderSlot(panel, { subPath: "bot_1/edit" }, { rpc: RPC });
+    fireEvent.click(await slot.findByLabelText("Change icon"));
+    fireEvent.click(await slot.findByRole("button", { name: "Blob" }));
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(slot.getByRole("button", { name: "flower" }));
+      fireEvent.change(slot.getByLabelText("Hex color"), { target: { value: "#123abc" } });
+      await vi.advanceTimersByTimeAsync(600);
+      expect(slot.inspection.rpcCalls.find(call => call.method === "saveBot")?.input).toMatchObject({ patch: { avatar: { version: 1, type: "blob", shape: "flower", color: "#123abc" } } });
+    } finally { vi.useRealTimers(); }
+    slot.lifecycle.unmount();
+  });
+
   it("opens the emoji picker from the avatar and swaps the icon", async () => {
     const panel = await loadPanel();
     const slot = renderSlot(panel, { subPath: "bot_1/edit" }, { rpc: RPC });
@@ -489,16 +557,16 @@ describe("bots nav panel", () => {
     // grid. "🦉" isn't used by any bot in RAIL_BOTS, so it can't collide with
     // an avatar rendered in the rail alongside the editor.
     const trigger = await slot.findByLabelText("Change icon");
-    expect(slot.queryByText("Choose an icon")).toBeNull();
+    expect(slot.queryByText("Choose an avatar")).toBeNull();
 
     fireEvent.click(trigger);
-    await slot.findByText("Choose an icon");
+    await slot.findByText("Choose an avatar");
 
     const target = slot.getByRole("button", { name: "🦉" });
     fireEvent.click(target);
 
     // Picking closes the dialog...
-    expect(slot.queryByText("Choose an icon")).toBeNull();
+    expect(slot.queryByText("Choose an avatar")).toBeNull();
     // ...and the avatar now shows the picked emoji.
     expect(slot.getByText("🦉").isConnected).toBe(true);
 
@@ -511,7 +579,7 @@ describe("bots nav panel", () => {
 
     const trigger = await slot.findByLabelText("Change icon");
     fireEvent.click(trigger);
-    await slot.findByText("Choose an icon");
+    await slot.findByText("Choose an avatar");
 
     // Install fake timers right before the state change that arms the
     // debounce, so the effect's setTimeout(..., AUTOSAVE_DELAY_MS) call is
@@ -543,7 +611,7 @@ describe("bots nav panel", () => {
 
     const trigger = await slot.findByLabelText("Change icon");
     fireEvent.click(trigger);
-    await slot.findByText("Choose an icon");
+    await slot.findByText("Choose an avatar");
 
     vi.useFakeTimers();
     try {
@@ -551,7 +619,7 @@ describe("bots nav panel", () => {
       fireEvent.change(customInput, { target: { value: "🦉" } });
 
       // Auto-applied immediately — no "Use" click — and the dialog closes.
-      expect(slot.queryByText("Choose an icon")).toBeNull();
+      expect(slot.queryByText("Choose an avatar")).toBeNull();
       expect(slot.getByText("🦉").isConnected).toBe(true);
 
       await vi.advanceTimersByTimeAsync(600);

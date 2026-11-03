@@ -31,6 +31,8 @@ import {
   MAX_INSTRUCTIONS,
   MAX_NAME,
   pickEmoji,
+  randomAvatar,
+  type BlobAvatar,
   type Bot,
   type ReasoningLevel,
 } from "@/bots";
@@ -44,6 +46,7 @@ const AUTOSAVE_DELAY_MS = 600;
 interface DraftFields {
   name: string;
   emoji: string;
+  avatar: BlobAvatar | null;
   instructions: string;
   providerId: string;
   model: string;
@@ -54,6 +57,7 @@ interface DraftFields {
 type BotPatch = Partial<{
   name: string;
   emoji: string;
+  avatar: BlobAvatar | null;
   instructions: string;
   providerId: string;
   model: string;
@@ -76,6 +80,10 @@ function diffDraft(
   if (current.emoji !== base.emoji) {
     patch.emoji = current.emoji;
     nextBase.emoji = current.emoji;
+  }
+  if (JSON.stringify(current.avatar) !== JSON.stringify(base.avatar)) {
+    patch.avatar = current.avatar;
+    nextBase.avatar = current.avatar;
   }
   if (current.instructions !== base.instructions) {
     patch.instructions = current.instructions;
@@ -114,6 +122,7 @@ export function BotEditor({ botId }: { botId: string }) {
 
   const [name, setName] = useState("");
   const [emoji, setEmoji] = useState(pickEmoji);
+  const [avatar, setAvatar] = useState<BlobAvatar | null>(null);
   const [instructions, setInstructions] = useState("");
   const [providerId, setProviderId] = useState("");
   const [model, setModel] = useState("");
@@ -137,6 +146,7 @@ export function BotEditor({ botId }: { botId: string }) {
   const draftRef = useRef<DraftFields>({
     name,
     emoji,
+    avatar,
     instructions,
     providerId,
     model,
@@ -146,6 +156,7 @@ export function BotEditor({ botId }: { botId: string }) {
   draftRef.current = {
     name,
     emoji,
+    avatar,
     instructions,
     providerId,
     model,
@@ -212,6 +223,7 @@ export function BotEditor({ botId }: { botId: string }) {
             options.providers[0])?.id ?? "";
     setName(bot.name);
     setEmoji(bot.emoji);
+    setAvatar(bot.avatar ?? null);
     setInstructions(bot.instructions);
     setProviderId(seededProviderId);
     setModel(bot.model);
@@ -222,6 +234,7 @@ export function BotEditor({ botId }: { botId: string }) {
     savedRef.current = {
       name: bot.name,
       emoji: bot.emoji,
+      avatar: bot.avatar ?? null,
       instructions: bot.instructions,
       providerId: bot.providerId,
       model: bot.model,
@@ -275,7 +288,7 @@ export function BotEditor({ botId }: { botId: string }) {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSeeded, name, emoji, instructions, providerId, model, reasoningLevel, projectId]);
+  }, [isSeeded, name, emoji, avatar, instructions, providerId, model, reasoningLevel, projectId]);
 
   // A user hitting Cmd-W (or Alt-Tab, etc.) moments after typing must not
   // lose that keystroke, so flush on both unmount and window blur — blur
@@ -308,6 +321,7 @@ export function BotEditor({ botId }: { botId: string }) {
     ...bot,
     name: name.trim(),
     emoji,
+    avatar,
     instructions,
     providerId,
     model,
@@ -376,20 +390,20 @@ export function BotEditor({ botId }: { botId: string }) {
           {nameBlocked ? <span className="text-xs text-destructive">Required</span> : null}
         </div>
         <div className="flex items-center gap-2">
-          <EmojiPicker value={emoji} onChange={setEmoji}>
+          <EmojiPicker value={emoji} onChange={setEmoji} avatar={avatar} onAvatarChange={setAvatar}>
             <button
               type="button"
               aria-label="Change icon"
               className="cursor-pointer rounded-lg hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
-              <BotAvatar botId={bot.id} emoji={emoji} />
+              <BotAvatar botId={bot.id} emoji={emoji} avatar={avatar} />
             </button>
           </EmojiPicker>
           <Button
             type="button"
             size="sm"
             variant="outline"
-            onClick={() => setEmoji(pickEmoji())}
+            onClick={() => avatar ? setAvatar(randomAvatar()) : setEmoji(pickEmoji())}
           >
             Shuffle icon
           </Button>

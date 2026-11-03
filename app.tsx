@@ -141,7 +141,7 @@ function BotsPanel({ subPath }: PluginNavPanelProps) {
 
   return (
     <div className="flex h-full min-h-0">
-      <BotRail selectedBotId={selectedBotId} />
+      <BotRail selectedBotId={selectedBotId} selectedThreadId={route.view === "chat" ? route.threadId : null} />
       <div className="min-h-0 flex-1">{content}</div>
     </div>
   );

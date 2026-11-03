@@ -19,6 +19,7 @@ import { COARSE_POINTER_HEADER_ICON_BUTTON_CLASS } from "@/components/ui/coarse-
 import { Icon } from "@/components/ui/icon";
 import { BotAvatar } from "@/components/BotAvatar";
 import { ChatRow } from "@/components/ChatRow";
+import { useRelativeClock } from "@/components/relative-time";
 import { useBotsRpc, useQuery } from "@/components/use-query";
 import { PANEL_PATH } from "@/components/panel-path";
 import { cn } from "@/lib/utils";
@@ -85,7 +86,7 @@ export function BotHeader({
           <Icon name="ChevronLeft" aria-hidden />
         </button>
       )}
-      <BotAvatar botId={bot.id} emoji={bot.emoji} size="sm" />
+      <BotAvatar botId={bot.id} emoji={bot.emoji} avatar={bot.avatar} size="sm" animated />
       <div className="min-w-0 flex-1">
         {onGoToBotPage === undefined ? (
           <p className="truncate text-sm font-medium">{displayName(bot)}</p>
@@ -205,6 +206,7 @@ export function BotHome({
   botId: string;
   onBack?: () => void;
 }) {
+  useRelativeClock();
   const rpc = useBotsRpc();
   const navigate = useBbNavigate();
   const [instructionsExpanded, setInstructionsExpanded] = useState(false);
