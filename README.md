@@ -130,6 +130,62 @@ and find them in the sidebar like any other BB conversation.
 Deleting a bot does not delete its existing chats. Those chats stay available,
 but they no longer receive that bot's instructions.
 
+## Webhook
+
+Each bot has one webhook. Each signed request starts one new chat in that bot,
+with the bot's provider, model, reasoning level and project. A bot with no
+project uses your personal project. The chat runs in `accept-edits` mode.
+
+To enable it, open the bot editor, go to **Webhook**, and turn on **Enabled**.
+Only a published bot can fire. Use **Reveal** to see the secret and **Rotate**
+to replace it. The old secret stops working at once.
+
+By default the URL works only on this machine. For callers on the internet,
+put a tunnel in front of bb. Then set **Public base URL** in
+Settings → Installed plugins → Bots, for example `https://bb.example.com`. The
+value must start with `https://`. `http://localhost` and `http://127.0.0.1`
+are also accepted. Do not add a path, a query or a fragment.
+
+Sign `"{timestamp}.{body}"` with HMAC-SHA256 and the secret:
+
+```sh
+URL='<url from the bot editor>'
+SECRET='whsec_REPLACE_ME'   # use Reveal in the bot editor
+BODY='{"text":"hello"}'
+TS=$(date +%s)
+SIG=$(printf '%s.%s' "$TS" "$BODY" | openssl dgst -sha256 -hmac "$SECRET" -hex | sed 's/^.* //')
+curl -X POST "$URL" \
+  -H "Content-Type: application/json" \
+  -H "X-Hook-Timestamp: $TS" \
+  -H "X-Hook-Signature: sha256=$SIG" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -d "$BODY"
+```
+
+The body goes to the bot as data, not as instructions. The response comes back
+before the bot finishes.
+
+| Status | Meaning |
+|---|---|
+| 202 | Accepted. Body: `{ "threadId", "eventId" }` |
+| 200 | The same request (same signature or `Idempotency-Key`) already started a chat. Body: `{ "threadId" }` |
+| 400 | `Content-Type` is JSON, but the body is not valid JSON |
+| 401 | Bad or missing signature, timestamp outside 5 minutes, unknown or draft bot, or webhook disabled. The response is the same for each case |
+| 409 | The same request is still in progress. Retry after `Retry-After` (1 s) |
+| 413 | The body is larger than 256 KB |
+| 415 | `Content-Type` is not `application/json` or `text/plain` |
+| 429 | The bot's rate limit is reached (see `Retry-After`), or too many failed signatures from all callers |
+| 502 | bb could not start the chat. Retry is safe |
+
+Limits:
+
+- Body: 256 KB.
+- Timestamp: within 300 seconds of the bb clock.
+- Rate: 10 requests a minute per bot by default, from 1 to 600. Set it in the
+  bot editor. The counter resets when bb restarts.
+- Failed signatures: 120 a minute across all bots, then 429.
+- Repeat detection: 24 hours.
+
 ## Development
 
 ```sh

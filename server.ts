@@ -19,6 +19,8 @@ import {
   type Bot,
   type BotRow,
 } from "./bots.js";
+import { HOOK_ROUTE_PATH, hookRpcMethods } from "./hook-contract.js";
+import { createHookService } from "./hook.js";
 
 const ReasoningLevel = z.enum([
   "none",
@@ -124,6 +126,8 @@ const NewThreadRequestSchema = z.object({
 });
 
 export const rpcContract = defineRpcContract({
+  // Webhook methods: getHook, saveHook, revealSecret, rotateSecret.
+  ...hookRpcMethods,
   listBots: {
     input: z.null(),
     output: z.object({ bots: z.array(BotSchema) }),
@@ -247,6 +251,26 @@ export default async function plugin(bb: BbPluginApi) {
     // separate backfill statement or code path.
     `ALTER TABLE bots ADD COLUMN status TEXT NOT NULL DEFAULT 'published'`,
     `ALTER TABLE bots ADD COLUMN avatar_json TEXT`,
+    // Webhook. A row per bot that ever opened its Webhook section; the
+    // secret itself is derived from hook-master.key, so only its version is
+    // stored.
+    `CREATE TABLE IF NOT EXISTS bot_hooks (
+       bot_id             TEXT PRIMARY KEY,
+       enabled            INTEGER NOT NULL DEFAULT 0,
+       secret_version     INTEGER NOT NULL DEFAULT 1,
+       rate_limit_per_min INTEGER NOT NULL DEFAULT 10,
+       created_at         INTEGER NOT NULL
+     )`,
+    // One row per accepted delivery: the replay guard and the claim lock.
+    `CREATE TABLE IF NOT EXISTS hook_seen (
+       bot_id     TEXT NOT NULL,
+       signature  TEXT NOT NULL,
+       idem_key   TEXT,
+       claimed_at INTEGER NOT NULL,
+       thread_id  TEXT,
+       UNIQUE (bot_id, signature)
+     )`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS hook_seen_idem ON hook_seen(bot_id, idem_key) WHERE idem_key IS NOT NULL`,
   ]);
 
   // contributeInstructions is synchronous and sits on the thread-start path,
@@ -286,6 +310,30 @@ export default async function plugin(bb: BbPluginApi) {
   function announce() {
     bb.realtime.publish("bots", { changedAt: Date.now() });
   }
+
+  // Shared by startChat and the webhook: the bot_threads row is what makes
+  // contributeInstructions apply the persona to the new thread.
+  function recordThread(botId: string, threadId: string) {
+    db.prepare(
+      "INSERT INTO bot_threads (thread_id, bot_id, created_at) VALUES (?, ?, ?)",
+    ).run(threadId, botId, Date.now());
+    botIdByThreadId.set(threadId, botId);
+  }
+
+  const hooks = createHookService({
+    bb,
+    db,
+    getBot: (botId) => botsById.get(botId),
+    // A webhook thread starts without anyone watching, so tell open panels
+    // to refresh their chat lists.
+    recordThread: (botId, threadId) => {
+      recordThread(botId, threadId);
+      announce();
+    },
+  });
+
+  // auth "none": the handler checks an HMAC signature on every request.
+  bb.http.route("POST", HOOK_ROUTE_PATH, hooks.handle, { auth: "none" });
 
   bb.rpc.register(rpcContract, {
     listBots: () => ({
@@ -410,6 +458,7 @@ export default async function plugin(bb: BbPluginApi) {
     // Deletes the bot and its thread mappings. The threads themselves are real
     // conversations, so they stay — they just stop receiving the persona.
     deleteBot: ({ botId }) => {
+      hooks.forgetBot(botId);
       db.prepare("DELETE FROM bot_threads WHERE bot_id = ?").run(botId);
       db.prepare("DELETE FROM bots WHERE id = ?").run(botId);
       botsById.delete(botId);
@@ -554,10 +603,7 @@ export default async function plugin(bb: BbPluginApi) {
         spawnArgs as Parameters<typeof bb.sdk.threads.spawn>[0],
       );
 
-      db.prepare(
-        "INSERT INTO bot_threads (thread_id, bot_id, created_at) VALUES (?, ?, ?)",
-      ).run(thread.id, bot.id, Date.now());
-      botIdByThreadId.set(thread.id, bot.id);
+      recordThread(bot.id, thread.id);
       bb.log.info(`started chat ${thread.id} for bot ${bot.id}`);
       return { threadId: thread.id };
     },
@@ -618,6 +664,30 @@ export default async function plugin(bb: BbPluginApi) {
           ),
         })),
       };
+    },
+
+    // Webhook. Each throws for an unknown bot via readBot. A draft bot has a
+    // hook too — the editor shows it — but the route refuses to fire it.
+    getHook: async ({ botId }) => {
+      readBot(botId);
+      return { hook: await hooks.getState(botId) };
+    },
+
+    // The contract schema already bounds rateLimitPerMin, so nothing is
+    // clamped here.
+    saveHook: async ({ botId, enabled, rateLimitPerMin }) => {
+      readBot(botId);
+      return { hook: await hooks.save(botId, enabled, rateLimitPerMin) };
+    },
+
+    revealSecret: ({ botId }) => {
+      readBot(botId);
+      return { secret: hooks.revealSecret(botId) };
+    },
+
+    rotateSecret: async ({ botId }) => {
+      readBot(botId);
+      return hooks.rotateSecret(botId);
     },
   });
 
