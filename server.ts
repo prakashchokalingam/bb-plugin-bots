@@ -20,16 +20,9 @@ import {
   type BotRow,
 } from "./bots.js";
 
-const ReasoningLevel = z.enum([
-  "none",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-  "ultra",
-  "ultracode",
-]);
+// BB reasoning levels are open strings: a provider can declare its own
+// levels beyond the standard ones, so accept any non-empty id.
+const ReasoningLevel = z.string().min(1);
 
 const AvatarSchema = z.object({ version: z.literal(1), type: z.literal("blob"), shape: z.enum(["round", "flower", "star", "cloud", "heart", "shield", "hexagon", "sun", "triangle"]), color: z.string().regex(/^#[0-9a-fA-F]{6}$/) }).strict();
 
@@ -77,27 +70,27 @@ const ChatSchema = z.object({
   archivedAt: z.number().int().nullable(),
 });
 
-// Mirrors the host's `promptInputSchema` (bb-plugin-sdk-app.d.ts) exactly.
-// This is the part that carries images, so it's spelled out rather than
-// left opaque like `environment`/`executionInputSources` below.
+// Mirrors the host's `promptInputSchema` (bb-plugin-sdk-app.d.ts). Loose so
+// fields not listed here (such as `sourceProjectId`/`hostId` on local
+// attachments) reach `threads.spawn` instead of being stripped.
 const PromptInputSchema = z.discriminatedUnion("type", [
-  z.object({
+  z.looseObject({
     type: z.literal("text"),
     text: z.string(),
     mentions: z.array(z.unknown()).default([]),
     visibility: z.literal("agent-only").optional(),
   }),
-  z.object({
+  z.looseObject({
     type: z.literal("image"),
     url: z.string(),
     visibility: z.literal("agent-only").optional(),
   }),
-  z.object({
+  z.looseObject({
     type: z.literal("localImage"),
     path: z.string(),
     visibility: z.literal("agent-only").optional(),
   }),
-  z.object({
+  z.looseObject({
     type: z.literal("localFile"),
     path: z.string(),
     name: z.string().optional(),
@@ -110,8 +103,10 @@ const PromptInputSchema = z.discriminatedUnion("type", [
 // The fully-resolved request `experimental_NewThreadComposer` submits.
 // `executionInputSources` and `environment` are host-owned opaque shapes —
 // mirroring them here would just rot, so they stay unknown and get cast at
-// the `threads.spawn` boundary instead.
-const NewThreadRequestSchema = z.object({
+// the `threads.spawn` boundary instead. Loose so fields not listed here
+// (`sessionOptions`, `sendAt`, and any the host adds later) are forwarded
+// to `threads.spawn` unchanged.
+const NewThreadRequestSchema = z.looseObject({
   projectId: z.string().min(1),
   providerId: z.string().min(1),
   model: z.string().min(1),
@@ -531,27 +526,12 @@ export default async function plugin(bb: BbPluginApi) {
 
       // The composer already validated these against the host's literal
       // unions (permission mode, mention structure, environment /
-      // executionInputSources internals). Re-typing them from our
-      // deliberately-loose zod schema would just rot, so cast once at the
-      // spawn boundary instead of mirroring the host's internal types here.
-      const spawnArgs = {
-        projectId: request.projectId,
-        providerId: request.providerId,
-        model: request.model,
-        reasoningLevel: request.reasoningLevel,
-        permissionMode: request.permissionMode,
-        ...(request.serviceTier === undefined
-          ? {}
-          : { serviceTier: request.serviceTier }),
-        executionInputSources: request.executionInputSources,
-        environment: request.environment,
-        input: request.input,
-        // Deliberately omitted: title is optional in CreateThreadRequest and
-        // BB auto-titles the thread from its first message. Passing bot.name
-        // here used to make every chat literally named after the bot.
-      };
+      // executionInputSources internals). Forward the request unchanged and
+      // cast once at the spawn boundary instead of mirroring the host's
+      // internal types here. There is no title: BB auto-titles the thread
+      // from its first message.
       const thread = await bb.sdk.threads.spawn(
-        spawnArgs as Parameters<typeof bb.sdk.threads.spawn>[0],
+        request as Parameters<typeof bb.sdk.threads.spawn>[0],
       );
 
       db.prepare(

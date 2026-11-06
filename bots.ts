@@ -49,11 +49,8 @@ const TINTS = [
   "bg-cyan-500/15 text-cyan-600 dark:text-cyan-400",
 ] as const;
 
-export const REASONING_LEVELS = [
-  "none", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode",
-] as const;
-
-export type ReasoningLevel = (typeof REASONING_LEVELS)[number];
+/** BB reasoning levels are open strings; providers declare their own. */
+export type ReasoningLevel = string;
 
 export type BotStatus = "draft" | "published";
 
@@ -309,11 +306,9 @@ export function rowToBot(row: BotRow): Bot {
     instructions: row.instructions,
     providerId: row.provider_id,
     model: row.model,
-    // Any unrecognised stored value reads as unset rather than flowing
-    // uncaught into the UI and the saveBot RPC's zod schema.
-    reasoningLevel: REASONING_LEVELS.includes(row.reasoning_level as ReasoningLevel)
-      ? (row.reasoning_level as ReasoningLevel)
-      : null,
+    // An empty stored value reads as unset rather than failing the saveBot
+    // RPC's non-empty reasoning level schema.
+    reasoningLevel: row.reasoning_level ? row.reasoning_level : null,
     projectId: row.project_id,
     // Any unexpected stored value reads as published rather than stranding
     // a bot as an un-publishable draft.
