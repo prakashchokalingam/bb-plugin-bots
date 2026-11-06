@@ -279,6 +279,39 @@ describe("startChat", () => {
     });
   });
 
+  it("forwards sessionOptions, sendAt and attachment routing fields to threads.spawn", async () => {
+    const botId = await createPublishedBot();
+    const sessionOptions = { "echo-twice": true };
+    const sendAt = Date.now() + 60 * 60 * 1000;
+    const input = [
+      { type: "text" as const, text: "later", mentions: [] },
+      {
+        type: "localImage" as const,
+        path: "attachments/shot.png",
+        sourceProjectId: "proj_work",
+        hostId: "host_2",
+      },
+    ];
+    await host.harness.behavior.callRpc("startChat", {
+      botId,
+      request: makeRequest({ sessionOptions, sendAt, input }),
+    });
+
+    const [args] = host.harness.inspection.sdk.callsTo("threads.spawn");
+    expect(args?.[0]).toMatchObject({ sessionOptions, sendAt, input });
+  });
+
+  it("accepts a provider-specific reasoning level", async () => {
+    const botId = await createPublishedBot();
+    await host.harness.behavior.callRpc("startChat", {
+      botId,
+      request: makeRequest({ reasoningLevel: "turbo" }),
+    });
+
+    const [args] = host.harness.inspection.sdk.callsTo("threads.spawn");
+    expect(args?.[0]).toMatchObject({ reasoningLevel: "turbo" });
+  });
+
   // Regression pin for the reported bug: `title` used to be hardcoded to
   // bot.name, so every chat in the UI was literally named "Builder". BB
   // auto-titles a thread from its first message when title is omitted.
@@ -597,5 +630,53 @@ describe("listOptions", () => {
       null,
     )) as { personalProjectId: string | null };
     expect(personalProjectId).toBe("proj_personal");
+  });
+});
+
+describe("listModels", () => {
+  it("returns models whose provider declares its own reasoning levels", async () => {
+    host.harness.inspection.sdk.stub(
+      "providers.models",
+      (async () => ({
+        models: [
+          {
+            id: "echo-1",
+            displayName: "Echo 1",
+            description: "",
+            isDefault: true,
+            model: "echo-1",
+            defaultReasoningEffort: "turbo",
+            supportedReasoningEfforts: [
+              { reasoningEffort: "medium", description: "" },
+              { reasoningEffort: "turbo", label: "Turbo", description: "" },
+            ],
+          },
+        ],
+      })) as never,
+    );
+
+    const { models } = (await host.harness.behavior.callRpc("listModels", {
+      providerId: "echo-agent",
+    })) as {
+      models: { defaultReasoningEffort: string; reasoningEfforts: string[] }[];
+    };
+    expect(models[0]).toMatchObject({
+      defaultReasoningEffort: "turbo",
+      reasoningEfforts: ["medium", "turbo"],
+    });
+  });
+
+  it("saves a bot with a provider-specific reasoning level", async () => {
+    const { botId } = (await host.harness.behavior.callRpc(
+      "createBot",
+      null,
+    )) as { botId: string };
+    await host.harness.behavior.callRpc("saveBot", {
+      botId,
+      patch: { reasoningLevel: "turbo" },
+    });
+    expect(
+      await host.harness.behavior.callRpc("getBot", { botId }),
+    ).toMatchObject({ bot: { reasoningLevel: "turbo" } });
   });
 });

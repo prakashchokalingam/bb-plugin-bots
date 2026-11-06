@@ -251,7 +251,12 @@ export function BotHome({
   // or uploaded images — toast and rethrow rather than swallow the error.
   async function startChat(request: NewThreadRequest) {
     try {
-      const started = await rpc.call("startChat", { botId, request });
+      // Spread into a plain object so the SDK's NewThreadRequest interface
+      // fits the RPC's loose schema; every field is forwarded unchanged.
+      const started = await rpc.call("startChat", {
+        botId,
+        request: { ...request },
+      });
       navigate.toPluginPanel(PANEL_PATH, {
         subPath: `${botId}/${started.threadId}`,
       });
@@ -353,7 +358,12 @@ export function BotHome({
                 defaultModel={bot.model}
                 {...(bot.reasoningLevel === null
                   ? {}
-                  : { defaultReasoningLevel: bot.reasoningLevel })}
+                  : {
+                      // The pinned SDK typings still list a fixed set of
+                      // levels; bb accepts any level the provider declares.
+                      defaultReasoningLevel:
+                        bot.reasoningLevel as NewThreadRequest["reasoningLevel"],
+                    })}
                 placeholder={`Message ${displayName(bot)}…`}
                 layout="document"
                 draftKey={`bots:start:${botId}`}

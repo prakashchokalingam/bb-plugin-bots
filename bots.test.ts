@@ -12,7 +12,6 @@ import {
   parseRoute,
   pickEmoji,
   previewInstructions,
-  REASONING_LEVELS,
   renderBotInstructions,
   routeToSubPath,
   rowToBot,
@@ -355,13 +354,15 @@ describe("rowToBot", () => {
     updated_at: 0,
   };
 
-  it("keeps a reasoning level that is in the union", () => {
-    expect(REASONING_LEVELS).toContain("medium");
+  it("keeps a standard reasoning level", () => {
     expect(rowToBot(row).reasoningLevel).toBe("medium");
   });
 
-  it("reads an out-of-union stored reasoning level as unset", () => {
-    expect(REASONING_LEVELS).not.toContain("turbo");
-    expect(rowToBot({ ...row, reasoning_level: "turbo" }).reasoningLevel).toBeNull();
+  it("keeps a provider-specific reasoning level", () => {
+    expect(rowToBot({ ...row, reasoning_level: "turbo" }).reasoningLevel).toBe("turbo");
+  });
+
+  it("reads an empty stored reasoning level as unset", () => {
+    expect(rowToBot({ ...row, reasoning_level: "" }).reasoningLevel).toBeNull();
   });
 });
