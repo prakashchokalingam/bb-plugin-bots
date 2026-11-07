@@ -30,6 +30,8 @@
     "hooks",
     "bots.test.ts",
     "server.test.ts",
+    "listener.ts",
+    "listener.test.ts",
     "verify.test.ts",
     "hook-contract.ts",
     "app.test.tsx",

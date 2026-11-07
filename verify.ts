@@ -2,19 +2,13 @@
 // is unit-testable without a running server.
 import { createHmac, timingSafeEqual } from "node:crypto";
 import {
-  HOOK_ROUTE_PATH,
+  HOOK_PATH_PREFIX,
   HOOK_SECRET_PREFIX,
   HOOK_SIGNATURE_PREFIX,
   HOOK_TIMESTAMP_SKEW_SECONDS,
+  LISTENER_PORT_MAX,
+  LISTENER_PORT_MIN,
 } from "./hook-contract.js";
-
-/**
- * The mount point of a plugin's HTTP routes. BB mounts them under the id the
- * plugin is installed with, so callers pass `bb.pluginId`, never a fixed id.
- */
-export function httpBasePath(pluginId: string): string {
-  return `/api/v1/plugins/${encodeURIComponent(pluginId)}/http`;
-}
 
 export const BASE_URL_ERROR = "Use a full URL that starts with https://";
 
@@ -82,9 +76,9 @@ export function verifySignature(o: {
 }
 
 /**
- * Validates the `publicBaseUrl` setting. Empty means "not set". Only an
- * origin is allowed — a path, query, or fragment would make the hook URL
- * ambiguous — and plain http only for this machine.
+ * Validates one base URL. Empty means "not set". Only an origin is allowed —
+ * a path, query, or fragment would make the hook URL ambiguous — and plain
+ * http only for this machine.
  */
 export function normalizeBaseUrl(
   input: string,
@@ -108,22 +102,48 @@ export function normalizeBaseUrl(
   return { ok: true, value: `${url.protocol}//${url.host}` };
 }
 
+export interface AllowedBaseUrls {
+  /** Valid base URLs, normalised, in the order typed, without repeats. */
+  urls: string[];
+  /** `host[:port]` of each valid URL: what a request's Host header must equal. */
+  hosts: string[];
+  /** Entries that are not valid, as typed (trimmed). */
+  invalid: string[];
+}
+
 /**
- * `url` is what a caller posts to: the public base when one is set, else
- * loopback. `localUrl` is always loopback, for scripts on this machine.
+ * Reads the `allowedBaseUrls` setting: comma-separated, each entry a full URL.
+ * An empty entry is skipped. A bad entry is reported, never fatal.
  */
-export function buildHookUrl(
-  publicBase: string | null,
-  loopbackBase: string,
-  pluginId: string,
-  botId: string,
-): { url: string; localUrl: string; isPublic: boolean } {
-  const suffix = `${httpBasePath(pluginId)}${HOOK_ROUTE_PATH}?id=${encodeURIComponent(botId)}`;
-  const localUrl = `${loopbackBase.replace(/\/+$/, "")}${suffix}`;
-  const isPublic = publicBase !== null && publicBase.length > 0;
-  return {
-    url: isPublic ? `${publicBase.replace(/\/+$/, "")}${suffix}` : localUrl,
-    localUrl,
-    isPublic,
-  };
+export function parseAllowedBaseUrls(text: string): AllowedBaseUrls {
+  const urls: string[] = [];
+  const hosts: string[] = [];
+  const invalid: string[] = [];
+  for (const part of text.split(",")) {
+    const entry = part.trim();
+    if (entry.length === 0) continue;
+    const normalized = normalizeBaseUrl(entry);
+    if (!normalized.ok) {
+      invalid.push(entry);
+      continue;
+    }
+    if (urls.includes(normalized.value)) continue;
+    urls.push(normalized.value);
+    hosts.push(new URL(normalized.value).host.toLowerCase());
+  }
+  return { urls, hosts, invalid };
+}
+
+/** The URL a caller posts to, once per base URL: `<base>/hooks/<botId>`. */
+export function buildHookUrls(bases: readonly string[], botId: string): string[] {
+  return bases.map((base) => `${base.replace(/\/+$/, "")}${HOOK_PATH_PREFIX}${botId}`);
+}
+
+/** The `listenerPort` setting as a number, or null when it is not a whole
+ * number from 1024 to 65535. */
+export function parseListenerPort(text: string): number | null {
+  const trimmed = text.trim();
+  if (!/^\d{1,5}$/.test(trimmed)) return null;
+  const port = Number(trimmed);
+  return port >= LISTENER_PORT_MIN && port <= LISTENER_PORT_MAX ? port : null;
 }

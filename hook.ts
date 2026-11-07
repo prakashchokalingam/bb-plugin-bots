@@ -1,28 +1,24 @@
 // Bot webhook — one bot owns one webhook, and each signed request starts one
-// new thread in that bot. server.ts registers the route and the RPC methods;
-// everything stateful about the hook lives here. The crypto is in verify.ts.
+// new thread in that bot. listener.ts receives the request and runs the
+// checks that need no secret (steps 0–4); processDelivery here runs the rest
+// (signature, rate, claim, spawn). The crypto is in verify.ts.
 import { randomBytes, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { BbPluginApi, PluginHttpHandler } from "@get-bb/plugin-sdk";
+import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { Bot } from "./bots.js";
 import {
   HOOK_CLAIM_STALE_MS,
   HOOK_DEFAULT_RATE_LIMIT_PER_MIN,
-  HOOK_HEADER_IDEMPOTENCY,
-  HOOK_HEADER_SIGNATURE,
-  HOOK_HEADER_TIMESTAMP,
-  HOOK_MAX_BODY_BYTES,
   HOOK_PERMISSION_MODE,
   HOOK_SEEN_RETENTION_MS,
   type HookState,
 } from "./hook-contract.js";
 import {
-  BASE_URL_ERROR,
-  buildHookUrl,
+  buildHookUrls,
   deriveSecret,
-  normalizeBaseUrl,
   verifySignature,
+  type AllowedBaseUrls,
 } from "./verify.js";
 
 export const MASTER_KEY_FILE = "hook-master.key";
@@ -32,12 +28,34 @@ export const HOOK_FAILED_AUTH_LIMIT_PER_MIN = 120;
 
 const MINUTE_MS = 60 * 1000;
 
-// Verified against when the bot is unknown, a draft, or disabled, so those
-// cases cost the same HMAC as a real bot and answer with the same 401.
-const DECOY_SECRET = `whsec_${"0".repeat(64)}`;
-
 type Database = ReturnType<BbPluginApi["storage"]["database"]>;
-type HttpContext = Parameters<PluginHttpHandler>[0];
+
+/** One request that passed the listener's pre-auth checks (steps 0–4). */
+export interface HookDelivery {
+  /** From the path /hooks/<botId>. */
+  botId: string;
+  /** The Host header, already matched against the allowed hosts. */
+  host: string;
+  /** The media type, already checked. */
+  contentType: "application/json" | "text/plain";
+  timestamp: string | undefined;
+  signature: string | undefined;
+  idemKey: string | undefined;
+  /** At most HOOK_MAX_BODY_BYTES. */
+  rawBody: Buffer;
+  receivedAt: number;
+}
+
+/** What the listener writes back. */
+export interface HookReply {
+  status: number;
+  body?: unknown;
+  headers?: Record<string, string>;
+}
+
+/** One 404 for every "no such webhook" case: wrong path, unknown, draft, or
+ * disabled bot. Callers must not be able to tell them apart. */
+export const NOT_FOUND_REPLY: HookReply = { status: 404, body: { error: "not found" } };
 
 interface HookRow {
   bot_id: string;
@@ -93,43 +111,17 @@ export function renderHookPrompt(rawBody: string, nonce: string): string {
   ].join("\n");
 }
 
-function json(
+function reply(
   status: number,
   body: unknown,
   headers: Record<string, string> = {},
-): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json", ...headers },
-  });
+): HookReply {
+  return { status, body, headers };
 }
 
-// One shape for every authentication failure, so a caller cannot tell an
-// unknown bot from a bad signature.
-function unauthorized(): Response {
-  return json(401, { error: "unauthorized" });
-}
-
-/**
- * Reads at most `limit` bytes. Returns null as soon as the stream goes past
- * it, without buffering the rest.
- */
-async function readBody(request: Request, limit: number): Promise<Buffer | null> {
-  if (request.body === null) return Buffer.alloc(0);
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > limit) {
-      await reader.cancel().catch(() => undefined);
-      return null;
-    }
-    chunks.push(value);
-  }
-  return Buffer.concat(chunks);
+// One shape for every authentication failure.
+function unauthorized(): HookReply {
+  return reply(401, { error: "unauthorized" });
 }
 
 export function createHookService(deps: {
@@ -138,30 +130,12 @@ export function createHookService(deps: {
   getBot: (botId: string) => Bot | undefined;
   /** Writes bot_threads and the in-memory persona map, then announces. */
   recordThread: (botId: string, threadId: string) => void;
+  /** The valid and ignored entries of the allowedBaseUrls setting, read fresh. */
+  readBaseUrls: () => Promise<AllowedBaseUrls>;
+  /** Where the listener is now. */
+  listenerStatus: () => HookState["listener"];
 }) {
-  const { bb, db, getBot, recordThread } = deps;
-
-  const settings = bb.settings.define({
-    publicBaseUrl: {
-      type: "string",
-      label: "Public base URL",
-      description:
-        "The address callers use to reach this bb. Use your tunnel URL. Leave empty for local use.",
-      default: "",
-    },
-  });
-  // The SDK's settings descriptors have no validator, so a bad value is
-  // stored as typed. It is rejected here, where it is read: the hook URL
-  // falls back to loopback (isPublic false) and the log says why.
-  let warnedBaseUrl: string | null = null;
-  function warnBadBaseUrl(value: string) {
-    if (warnedBaseUrl === value) return;
-    warnedBaseUrl = value;
-    bb.log.warn(`Public base URL ignored: ${BASE_URL_ERROR}`);
-  }
-  settings.onChange((next) => {
-    if (!normalizeBaseUrl(next.publicBaseUrl).ok) warnBadBaseUrl(next.publicBaseUrl);
-  });
+  const { bb, db, getBot, recordThread, readBaseUrls, listenerStatus } = deps;
 
   let masterKey: Buffer | null = null;
   function master(): Buffer {
@@ -189,34 +163,24 @@ export function createHookService(deps: {
     return readRow(botId)!;
   }
 
-  async function publicBase(): Promise<string | null> {
-    const { publicBaseUrl } = await settings.get();
-    const normalized = normalizeBaseUrl(publicBaseUrl);
-    if (!normalized.ok) {
-      warnBadBaseUrl(publicBaseUrl);
-      return null;
-    }
-    return normalized.value.length > 0 ? normalized.value : null;
-  }
-
   async function toState(row: HookRow): Promise<HookState> {
+    const base = await readBaseUrls();
+    const urls = buildHookUrls(base.urls, row.bot_id);
     return {
       botId: row.bot_id,
       enabled: row.enabled === 1,
       rateLimitPerMin: row.rate_limit_per_min,
       secretVersion: row.secret_version,
-      ...buildHookUrl(
-        await publicBase(),
-        bb.server.loopbackBaseUrl,
-        bb.pluginId,
-        row.bot_id,
-      ),
+      urls,
+      primaryUrl: urls[0] ?? null,
+      ignoredBaseUrls: base.invalid,
+      listener: listenerStatus(),
     };
   }
 
   // A failed attempt never touches the database. Past the global limit the
   // answer is a bare 429, so a guesser learns nothing more from it.
-  function failAuth(now: number): Response {
+  function failAuth(now: number): HookReply {
     if (now - failWindowStart >= MINUTE_MS) {
       if (failCount > HOOK_FAILED_AUTH_LIMIT_PER_MIN) {
         bb.log.warn(`webhook: ${failCount} failed signature checks in the last minute`);
@@ -231,20 +195,20 @@ export function createHookService(deps: {
           `webhook: more than ${HOOK_FAILED_AUTH_LIMIT_PER_MIN} failed signature checks in one minute; answering 429`,
         );
       }
-      return json(429, { error: "too many requests" });
+      return reply(429, { error: "too many requests" });
     }
     return unauthorized();
   }
 
   // Sliding window over accepted (authenticated) calls only.
-  function rateLimit(botId: string, perMin: number, now: number): Response | null {
+  function rateLimit(botId: string, perMin: number, now: number): HookReply | null {
     const recent = (acceptedAtByBotId.get(botId) ?? []).filter(
       (at) => now - at < MINUTE_MS,
     );
     if (recent.length >= perMin) {
       acceptedAtByBotId.set(botId, recent);
       const retryAfter = Math.max(1, Math.ceil((recent[0]! + MINUTE_MS - now) / 1000));
-      return json(429, { error: "rate limited" }, { "retry-after": String(retryAfter) });
+      return reply(429, { error: "rate limited" }, { "retry-after": String(retryAfter) });
     }
     recent.push(now);
     acceptedAtByBotId.set(botId, recent);
@@ -290,32 +254,41 @@ export function createHookService(deps: {
     return personal.id;
   }
 
-  // Order matters: size, then auth, then rate, then content. Never waits for
-  // the agent — the response goes out as soon as the thread exists.
-  async function handle(c: HttpContext): Promise<Response> {
-    const now = Date.now();
+  // A bot takes webhooks when it is published and its hook is on. The
+  // listener asks this before it reads the body.
+  function isLive(botId: string): boolean {
+    return getBot(botId)?.status === "published" && readRow(botId)?.enabled === 1;
+  }
 
-    // 1. Size.
-    const declared = Number(c.req.header("content-length"));
-    if (Number.isFinite(declared) && declared > HOOK_MAX_BODY_BYTES) {
-      return json(413, { error: "body too large" });
-    }
-    const rawBody = await readBody(c.req.raw, HOOK_MAX_BODY_BYTES);
-    if (rawBody === null) return json(413, { error: "body too large" });
+  // How many bots take webhooks now. The listener stays closed at zero.
+  function liveBotCount(): number {
+    const rows = db
+      .prepare("SELECT bot_id FROM bot_hooks WHERE enabled = 1")
+      .all() as { bot_id: string }[];
+    return rows.filter((row) => getBot(row.bot_id)?.status === "published").length;
+  }
 
-    // 2. Auth.
-    const botId = c.req.query("id") ?? "";
+  // Steps 5–7 of the request chain. Order matters: signature, then rate, then
+  // content. Never waits for the agent — the reply goes out as soon as the
+  // thread exists.
+  async function processDelivery(delivery: HookDelivery): Promise<HookReply> {
+    const { botId, receivedAt: now } = delivery;
+
+    // 5. Signature. The listener checked the bot, but the body took time to
+    // arrive, so look again.
     const bot = getBot(botId);
-    const row = bot === undefined ? undefined : readRow(botId);
-    const live = bot?.status === "published" && row?.enabled === 1;
+    const row = readRow(botId);
+    if (bot === undefined || bot.status !== "published" || row?.enabled !== 1) {
+      return NOT_FOUND_REPLY;
+    }
     const verdict = verifySignature({
-      secret: live ? deriveSecret(master(), botId, row!.secret_version) : DECOY_SECRET,
-      timestamp: c.req.header(HOOK_HEADER_TIMESTAMP),
-      signatureHeader: c.req.header(HOOK_HEADER_SIGNATURE),
-      rawBody,
+      secret: deriveSecret(master(), botId, row.secret_version),
+      timestamp: delivery.timestamp,
+      signatureHeader: delivery.signature,
+      rawBody: delivery.rawBody,
       nowMs: now,
     });
-    if (!live || !verdict.ok) return failAuth(now);
+    if (!verdict.ok) return failAuth(now);
 
     // Cleanup runs only for authenticated calls, so an unauthenticated flood
     // never touches the database.
@@ -323,36 +296,26 @@ export function createHookService(deps: {
       now - HOOK_SEEN_RETENTION_MS,
     );
 
-    // 3. Per-bot rate.
-    const limited = rateLimit(botId, row!.rate_limit_per_min, now);
+    // 6. Per-bot rate, then content, then claim.
+    const limited = rateLimit(botId, row.rate_limit_per_min, now);
     if (limited) return limited;
 
-    // 4. Content.
-    const mediaType = (c.req.header("content-type") ?? "")
-      .split(";")[0]!
-      .trim()
-      .toLowerCase();
-    if (mediaType !== "application/json" && mediaType !== "text/plain") {
-      return json(415, { error: "use application/json or text/plain" });
-    }
-    const text = rawBody.toString("utf8");
-    if (mediaType === "application/json") {
+    const text = delivery.rawBody.toString("utf8");
+    if (delivery.contentType === "application/json") {
       try {
         JSON.parse(text);
       } catch {
-        return json(400, { error: "body is not valid JSON" });
+        return reply(400, { error: "body is not valid JSON" });
       }
     }
 
-    // 5. Claim.
-    const idemKey = c.req.header(HOOK_HEADER_IDEMPOTENCY)?.trim() || null;
-    const claimed = claim(botId, verdict.signature, idemKey, now);
-    if (claimed.kind === "done") return json(200, { threadId: claimed.threadId });
+    const claimed = claim(botId, verdict.signature, delivery.idemKey?.trim() || null, now);
+    if (claimed.kind === "done") return reply(200, { threadId: claimed.threadId });
     if (claimed.kind === "busy") {
-      return json(409, { error: "already in progress" }, { "retry-after": "1" });
+      return reply(409, { error: "already in progress" }, { "retry-after": "1" });
     }
 
-    // 6. Spawn.
+    // 7. Spawn.
     let threadId: string;
     try {
       const thread = await bb.sdk.threads.spawn({
@@ -370,7 +333,7 @@ export function createHookService(deps: {
       bb.log.warn(
         `webhook: could not start a thread for bot ${botId}: ${error instanceof Error ? error.message : String(error)}`,
       );
-      return json(502, { error: "could not start a thread" });
+      return reply(502, { error: "could not start a thread" });
     }
     recordThread(botId, threadId);
     db.prepare("UPDATE hook_seen SET thread_id = ? WHERE rowid = ?").run(
@@ -378,11 +341,13 @@ export function createHookService(deps: {
       claimed.rowid,
     );
     bb.log.info(`webhook started thread ${threadId} for bot ${botId}`);
-    return json(202, { threadId, eventId: `evt_${randomUUID().replaceAll("-", "")}` });
+    return reply(202, { threadId, eventId: `evt_${randomUUID().replaceAll("-", "")}` });
   }
 
   return {
-    handle,
+    processDelivery,
+    isLive,
+    liveBotCount,
 
     getState: (botId: string) => toState(ensureRow(botId)),
 
@@ -391,7 +356,6 @@ export function createHookService(deps: {
       db.prepare(
         "UPDATE bot_hooks SET enabled = ?, rate_limit_per_min = ? WHERE bot_id = ?",
       ).run(enabled ? 1 : 0, rateLimitPerMin, botId);
-      return toState(readRow(botId)!);
     },
 
     revealSecret: (botId: string) =>

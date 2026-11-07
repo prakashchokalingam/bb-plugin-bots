@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   BASE_URL_ERROR,
-  buildHookUrl,
+  buildHookUrls,
   deriveSecret,
   normalizeBaseUrl,
+  parseAllowedBaseUrls,
+  parseListenerPort,
   signPayload,
   verifySignature,
 } from "./verify.js";
@@ -130,37 +132,80 @@ describe("normalizeBaseUrl", () => {
   });
 });
 
-describe("buildHookUrl", () => {
-  const loopback = "http://127.0.0.1:38886";
-  const path = "/api/v1/plugins/bots/http/hook?id=bot_1";
-
-  it("uses the public base first, with loopback as localUrl", () => {
-    expect(buildHookUrl("https://hooks.example.com", loopback, "bots", "bot_1")).toEqual({
-      url: `https://hooks.example.com${path}`,
-      localUrl: `${loopback}${path}`,
-      isPublic: true,
-    });
-  });
-
-  it("falls back to loopback when the public base is null or empty", () => {
-    for (const base of [null, ""]) {
-      expect(buildHookUrl(base, `${loopback}/`, "bots", "bot_1")).toEqual({
-        url: `${loopback}${path}`,
-        localUrl: `${loopback}${path}`,
-        isPublic: false,
-      });
+describe("parseAllowedBaseUrls", () => {
+  it("returns nothing for an empty or blank setting", () => {
+    for (const text of ["", "   ", ",", " , ,"]) {
+      expect(parseAllowedBaseUrls(text)).toEqual({ urls: [], hosts: [], invalid: [] });
     }
   });
 
-  it("encodes the bot id", () => {
-    expect(buildHookUrl(null, loopback, "bots", "a b&c").url).toBe(
-      `${loopback}/api/v1/plugins/bots/http/hook?id=a%20b%26c`,
-    );
+  it("reads comma-separated entries in order, with their hosts", () => {
+    expect(
+      parseAllowedBaseUrls("https://hooks.you.com, http://127.0.0.1:38990/ ,https://b.example.com:8443"),
+    ).toEqual({
+      urls: ["https://hooks.you.com", "http://127.0.0.1:38990", "https://b.example.com:8443"],
+      hosts: ["hooks.you.com", "127.0.0.1:38990", "b.example.com:8443"],
+      invalid: [],
+    });
   });
 
-  it("builds the path from the plugin id, not from a fixed one", () => {
-    const built = buildHookUrl("https://hooks.example.com", loopback, "bots-livetest", "bot_1");
-    expect(built.url).toBe("https://hooks.example.com/api/v1/plugins/bots-livetest/http/hook?id=bot_1");
-    expect(built.localUrl).toBe(`${loopback}/api/v1/plugins/bots-livetest/http/hook?id=bot_1`);
+  it("allows http only for 127.0.0.1 and localhost", () => {
+    const parsed = parseAllowedBaseUrls("http://localhost:3000,http://hooks.you.com");
+    expect(parsed.urls).toEqual(["http://localhost:3000"]);
+    expect(parsed.invalid).toEqual(["http://hooks.you.com"]);
   });
+
+  it("reports an entry that is not valid and keeps the others", () => {
+    expect(
+      parseAllowedBaseUrls("hooks.you.com, https://ok.example.com, https://x.example.com/path, https://y.example.com?a=1"),
+    ).toEqual({
+      urls: ["https://ok.example.com"],
+      hosts: ["ok.example.com"],
+      invalid: ["hooks.you.com", "https://x.example.com/path", "https://y.example.com?a=1"],
+    });
+  });
+
+  it("lower-cases the host and drops a repeated entry", () => {
+    expect(parseAllowedBaseUrls("https://Hooks.You.com,https://hooks.you.com/")).toEqual({
+      urls: ["https://hooks.you.com"],
+      hosts: ["hooks.you.com"],
+      invalid: [],
+    });
+  });
+
+  it("drops the default https port from the host", () => {
+    expect(parseAllowedBaseUrls("https://hooks.you.com:443").hosts).toEqual(["hooks.you.com"]);
+  });
+});
+
+describe("buildHookUrls", () => {
+  it("builds <base>/hooks/<botId> for each base, in order", () => {
+    expect(
+      buildHookUrls(["https://hooks.you.com", "http://127.0.0.1:38990"], "bot_0123456789abcdef"),
+    ).toEqual([
+      "https://hooks.you.com/hooks/bot_0123456789abcdef",
+      "http://127.0.0.1:38990/hooks/bot_0123456789abcdef",
+    ]);
+  });
+
+  it("returns an empty list for no bases", () => {
+    expect(buildHookUrls([], "bot_0123456789abcdef")).toEqual([]);
+  });
+});
+
+describe("parseListenerPort", () => {
+  it.each([
+    ["38990", 38990],
+    [" 1024 ", 1024],
+    ["65535", 65535],
+  ])("accepts %j", (text, port) => {
+    expect(parseListenerPort(text)).toBe(port);
+  });
+
+  it.each(["", "1023", "65536", "0", "-1", "38990.5", "abc", "38 990", "99999999"])(
+    "rejects %j",
+    (text) => {
+      expect(parseListenerPort(text)).toBeNull();
+    },
+  );
 });

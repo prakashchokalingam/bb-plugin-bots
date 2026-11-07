@@ -4,7 +4,8 @@
 import { z } from "zod";
 
 // ── Wire constants ───────────────────────────────────────────────────────────
-export const HOOK_ROUTE_PATH = "/hook";
+// The listener serves one path per bot: POST /hooks/<botId>.
+export const HOOK_PATH_PREFIX = "/hooks/";
 export const HOOK_HEADER_TIMESTAMP = "x-hook-timestamp";
 export const HOOK_HEADER_SIGNATURE = "x-hook-signature";
 export const HOOK_HEADER_IDEMPOTENCY = "idempotency-key";
@@ -20,6 +21,21 @@ export const HOOK_RATE_LIMIT_MAX = 600;
 export const HOOK_SEEN_RETENTION_MS = 24 * 60 * 60 * 1000;
 export const HOOK_CLAIM_STALE_MS = 60 * 1000;
 
+// ── Listener ─────────────────────────────────────────────────────────────────
+// The plugin setting is a string because SDK 0.4.8 has no number type.
+export const DEFAULT_LISTENER_PORT = "38990";
+export const LISTENER_PORT_MIN = 1024;
+export const LISTENER_PORT_MAX = 65535;
+export const LISTENER_MAX_CONNECTIONS = 64;
+export const LISTENER_HEADERS_TIMEOUT_MS = 10 * 1000;
+export const LISTENER_REQUEST_TIMEOUT_MS = 30 * 1000;
+export const LISTENER_KEEP_ALIVE_TIMEOUT_MS = 5 * 1000;
+// `listener.reason` values the UI turns into its own text. Any other reason is
+// shown as given.
+export const LISTENER_REASON_PORT_IN_USE = "port-in-use";
+export const LISTENER_REASON_PORT_INVALID = "port-invalid";
+export const LISTENER_REASON_STARTING = "starting";
+
 // Fixed in code, never a setting. `accept-edits` is the most restrictive value
 // of the SDK's permission enum ("accept-edits" | "auto" | "full").
 export const HOOK_PERMISSION_MODE = "accept-edits" as const;
@@ -34,12 +50,20 @@ export const HookStateSchema = z.object({
     .min(HOOK_RATE_LIMIT_MIN)
     .max(HOOK_RATE_LIMIT_MAX),
   secretVersion: z.number().int().min(1),
-  // Full URL a caller posts to. Uses `publicBaseUrl` when set, else loopback.
-  url: z.string(),
-  // Always the loopback URL, for scripts on this machine.
-  localUrl: z.string(),
-  // True when `url` is built from `publicBaseUrl`. False means "local only".
-  isPublic: z.boolean(),
+  // One URL per valid entry of the `allowedBaseUrls` setting:
+  // base + "/hooks/" + botId.
+  urls: z.array(z.string()),
+  // The first entry of `urls`, or null when no base URL is valid.
+  primaryUrl: z.string().nullable(),
+  // Entries of `allowedBaseUrls` that were ignored because they are not valid.
+  ignoredBaseUrls: z.array(z.string()),
+  listener: z.object({
+    // "stopped" with reason "starting" means the bind is being retried.
+    state: z.enum(["running", "stopped", "error"]),
+    // The configured listener port.
+    port: z.number().int(),
+    reason: z.string().nullable(),
+  }),
 });
 export type HookState = z.infer<typeof HookStateSchema>;
 

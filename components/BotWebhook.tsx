@@ -4,7 +4,6 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Icon } from "@/components/ui/icon";
 import {
   Dialog,
   DialogClose,
@@ -19,6 +18,11 @@ import {
   HOOK_RATE_LIMIT_MAX,
   HOOK_RATE_LIMIT_MIN,
   HOOK_SECRET_PREFIX,
+  LISTENER_PORT_MAX,
+  LISTENER_PORT_MIN,
+  LISTENER_REASON_PORT_IN_USE,
+  LISTENER_REASON_PORT_INVALID,
+  LISTENER_REASON_STARTING,
   hookRpcMethods,
   type HookState,
 } from "@/hook-contract";
@@ -27,6 +31,64 @@ import {
 export const HOOK_AUTOSAVE_DELAY_MS = 600;
 
 const MASKED_SECRET = `${HOOK_SECRET_PREFIX}••••••••`;
+
+/** While the listener is still binding, ask again this often, this many times. */
+const LISTENER_POLL_MS = 1000;
+const LISTENER_POLL_MAX = 10;
+
+export interface StatusLine {
+  /** "ok" is the green running state, "idle" is neutral, "warn" needs action. */
+  tone: "ok" | "idle" | "warn";
+  glyph: "●" | "○" | "⚠";
+  text: string;
+}
+
+/**
+ * The listener status line. One line per state: running, no base URL, draft
+ * bot, port in use. A base URL that was ignored gets its own line, because it
+ * can sit next to any of the others.
+ */
+export function listenerStatusLines(hook: HookState, isDraft: boolean): StatusLine[] {
+  const lines: StatusLine[] = [];
+  const { listener } = hook;
+  if (isDraft) {
+    lines.push({ tone: "idle", glyph: "○", text: "Publish this bot to receive webhooks" });
+  } else if (listener.state === "running") {
+    lines.push({
+      tone: "ok",
+      glyph: "●",
+      text: `Listening on 127.0.0.1:${listener.port} — point your tunnel here`,
+    });
+  } else if (listener.state === "error") {
+    const text =
+      listener.reason === LISTENER_REASON_PORT_IN_USE
+        ? `Port ${listener.port} is in use — choose another port in plugin settings`
+        : listener.reason === LISTENER_REASON_PORT_INVALID
+          ? `The listener port must be a whole number from ${LISTENER_PORT_MIN} to ${LISTENER_PORT_MAX} — change it in plugin settings`
+          : `The listener could not start — ${listener.reason ?? "unknown error"}`;
+    lines.push({ tone: "warn", glyph: "⚠", text });
+  } else if (listener.reason === LISTENER_REASON_STARTING) {
+    lines.push({ tone: "idle", glyph: "○", text: "Starting the listener…" });
+  } else if (hook.urls.length === 0) {
+    lines.push({ tone: "idle", glyph: "○", text: "Stopped — add a base URL in plugin settings" });
+  } else {
+    lines.push({ tone: "idle", glyph: "○", text: "Stopped" });
+  }
+  for (const entry of hook.ignoredBaseUrls) {
+    lines.push({
+      tone: "warn",
+      glyph: "⚠",
+      text: `"${entry}" ignored — use a full URL that starts with https://`,
+    });
+  }
+  return lines;
+}
+
+const TONE_CLASS: Record<StatusLine["tone"], string> = {
+  ok: "text-emerald-600 dark:text-emerald-400",
+  idle: "text-muted-foreground",
+  warn: "text-amber-600 dark:text-amber-400",
+};
 
 /**
  * The shell snippet behind "Copy curl example". It always carries a
@@ -75,7 +137,7 @@ export function BotWebhook({ botId, isDraft }: { botId: string; isDraft: boolean
   const rpc = useRpc<typeof hookRpcMethods>();
   const { data, error } = useQuery(() => rpc.call("getHook", { botId }), `hook:${botId}`);
 
-  // The latest server view of the hook (URL, public flag, version). Editable
+  // The latest server view of the hook (URLs, listener, version). Editable
   // fields below are seeded from it once and then owned by the form.
   const [hook, setHook] = useState<HookState | null>(null);
   const [enabled, setEnabled] = useState(false);
@@ -111,6 +173,28 @@ export function BotWebhook({ botId, isDraft }: { botId: string; isDraft: boolean
     };
     setIsSeeded(true);
   }, [data, isSeeded]);
+
+  // The listener can still be binding when a save returns (a reload briefly
+  // leaves the old port holder in place). Ask again until it settles.
+  const pollCountRef = useRef(0);
+  useEffect(() => {
+    if (hook === null || hook.listener.reason !== LISTENER_REASON_STARTING) {
+      pollCountRef.current = 0;
+      return;
+    }
+    if (pollCountRef.current >= LISTENER_POLL_MAX) return;
+    const timer = setTimeout(() => {
+      pollCountRef.current += 1;
+      rpc
+        .call("getHook", { botId })
+        .then((result) => {
+          if (mountedRef.current) setHook(result.hook);
+        })
+        .catch(() => undefined);
+    }, LISTENER_POLL_MS);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hook, botId]);
 
   // Sends the form's values when they differ from the last confirmed save.
   // An unparsable rate keeps the saved one, so a half-typed field never
@@ -252,37 +336,41 @@ export function BotWebhook({ botId, isDraft }: { botId: string; isDraft: boolean
             <Label htmlFor="bot-webhook-enabled">Enabled</Label>
           </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="bot-webhook-url">URL</Label>
-            <div className="flex items-center gap-2">
-              <Input id="bot-webhook-url" value={hook.url} readOnly className="font-mono text-xs" />
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => void copyText(hook.url, "URL")}
-              >
-                Copy
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => void copyText(hook.localUrl, "Local URL")}
-              >
-                Copy local
-              </Button>
+          {hook.enabled ? (
+            <div role="status" className="space-y-1 text-xs">
+              {listenerStatusLines(hook, isDraft).map((line) => (
+                <p key={line.text} className={`flex items-start gap-1.5 ${TONE_CLASS[line.tone]}`}>
+                  <span aria-hidden>{line.glyph}</span>
+                  <span>{line.text}</span>
+                </p>
+              ))}
             </div>
-            {hook.isPublic ? null : (
-              <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <Icon name="AlertTriangle" className="size-3.5 shrink-0" aria-hidden />
-                <span>
-                  Local only. Set &quot;Public base URL&quot; in Settings → Installed plugins →
-                  Bots.
-                </span>
-              </p>
-            )}
-          </div>
+          ) : null}
+
+          {hook.urls.length > 0 ? (
+            <div className="space-y-2">
+              <Label>URLs</Label>
+              {hook.urls.map((url) => (
+                <div key={url} className="flex items-center gap-2">
+                  <Input
+                    value={url}
+                    readOnly
+                    aria-label={`Webhook URL ${url}`}
+                    className="font-mono text-xs"
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    aria-label={`Copy ${url}`}
+                    onClick={() => void copyText(url, "URL")}
+                  >
+                    Copy
+                  </Button>
+                </div>
+              ))}
+            </div>
+          ) : null}
 
           <div className="space-y-2">
             <Label htmlFor="bot-webhook-secret">Secret</Label>
@@ -351,7 +439,12 @@ export function BotWebhook({ botId, isDraft }: { botId: string; isDraft: boolean
             type="button"
             size="sm"
             variant="outline"
-            onClick={() => void copyText(curlExample(hook.url), "curl example")}
+            disabled={hook.primaryUrl === null}
+            onClick={() => {
+              if (hook.primaryUrl !== null) {
+                void copyText(curlExample(hook.primaryUrl), "curl example");
+              }
+            }}
           >
             Copy curl example
           </Button>

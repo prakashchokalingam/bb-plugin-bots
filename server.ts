@@ -19,8 +19,10 @@ import {
   type Bot,
   type BotRow,
 } from "./bots.js";
-import { HOOK_ROUTE_PATH, hookRpcMethods } from "./hook-contract.js";
+import { DEFAULT_LISTENER_PORT, hookRpcMethods } from "./hook-contract.js";
 import { createHookService } from "./hook.js";
+import { createHookListener } from "./listener.js";
+import { parseAllowedBaseUrls } from "./verify.js";
 
 const ReasoningLevel = z.enum([
   "none",
@@ -320,6 +322,25 @@ export default async function plugin(bb: BbPluginApi) {
     botIdByThreadId.set(threadId, botId);
   }
 
+  // Webhook settings. The SDK's descriptors have no number type and no
+  // validator, so the port is a string and a bad value is rejected where it
+  // is read (parseListenerPort, parseAllowedBaseUrls); the editor shows why.
+  const settings = bb.settings.define({
+    allowedBaseUrls: {
+      type: "string",
+      label: "Allowed base URLs",
+      description:
+        "Hosts that may call your bots' webhooks. Comma-separated full URLs, for example https://hooks.example.com. Point your tunnel at the listener port.",
+      default: "",
+    },
+    listenerPort: {
+      type: "string",
+      label: "Listener port",
+      description: "The webhook listener binds 127.0.0.1 on this port (1024–65535).",
+      default: DEFAULT_LISTENER_PORT,
+    },
+  });
+
   const hooks = createHookService({
     bb,
     db,
@@ -330,10 +351,24 @@ export default async function plugin(bb: BbPluginApi) {
       recordThread(botId, threadId);
       announce();
     },
+    readBaseUrls: async () => parseAllowedBaseUrls((await settings.get()).allowedBaseUrls),
+    listenerStatus: () => listener.status(),
   });
 
-  // auth "none": the handler checks an HMAC signature on every request.
-  bb.http.route("POST", HOOK_ROUTE_PATH, hooks.handle, { auth: "none" });
+  // The plugin's own listener on 127.0.0.1. BB's HTTP server never sees
+  // webhook traffic. It opens only while a published bot has its hook on and
+  // a base URL is valid; reconcile() runs wherever one of those can change.
+  const listener = createHookListener({
+    bb,
+    readSettings: () => settings.get(),
+    liveBotCount: hooks.liveBotCount,
+    isLive: hooks.isLive,
+    processDelivery: hooks.processDelivery,
+  });
+  bb.onDispose(() => listener.dispose());
+  settings.onChange(() => {
+    void listener.reconcile();
+  });
 
   bb.rpc.register(rpcContract, {
     listBots: () => ({
@@ -433,7 +468,7 @@ export default async function plugin(bb: BbPluginApi) {
 
     // Publishing an already-published bot is a no-op success — the editor
     // doesn't need to know which state it started in.
-    publishBot: ({ botId }) => {
+    publishBot: async ({ botId }) => {
       const existing = readBot(botId);
       if (existing.status === "published") return { ok: true };
       const blockers = draftBlockers(existing);
@@ -452,12 +487,13 @@ export default async function plugin(bb: BbPluginApi) {
       );
       botsById.set(bot.id, bot);
       announce();
+      await listener.reconcile();
       return { ok: true };
     },
 
     // Deletes the bot and its thread mappings. The threads themselves are real
     // conversations, so they stay — they just stop receiving the persona.
-    deleteBot: ({ botId }) => {
+    deleteBot: async ({ botId }) => {
       hooks.forgetBot(botId);
       db.prepare("DELETE FROM bot_threads WHERE bot_id = ?").run(botId);
       db.prepare("DELETE FROM bots WHERE id = ?").run(botId);
@@ -466,6 +502,7 @@ export default async function plugin(bb: BbPluginApi) {
         if (mapped === botId) botIdByThreadId.delete(threadId);
       }
       announce();
+      await listener.reconcile();
       return { ok: true };
     },
 
@@ -667,7 +704,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
 
     // Webhook. Each throws for an unknown bot via readBot. A draft bot has a
-    // hook too — the editor shows it — but the route refuses to fire it.
+    // hook too — the editor shows it — but the listener refuses to fire it.
     getHook: async ({ botId }) => {
       readBot(botId);
       return { hook: await hooks.getState(botId) };
@@ -677,7 +714,9 @@ export default async function plugin(bb: BbPluginApi) {
     // clamped here.
     saveHook: async ({ botId, enabled, rateLimitPerMin }) => {
       readBot(botId);
-      return { hook: await hooks.save(botId, enabled, rateLimitPerMin) };
+      hooks.save(botId, enabled, rateLimitPerMin);
+      await listener.reconcile();
+      return { hook: await hooks.getState(botId) };
     },
 
     revealSecret: ({ botId }) => {
@@ -690,6 +729,9 @@ export default async function plugin(bb: BbPluginApi) {
       return hooks.rotateSecret(botId);
     },
   });
+
+  // Open the port now if a bot already has its hook on. Never fails the load.
+  await listener.reconcile();
 
   // Keep the mapping from growing without bound. Archived threads are still
   // resumable, so only deletion drops the persona link.
