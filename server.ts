@@ -19,6 +19,10 @@ import {
   type Bot,
   type BotRow,
 } from "./bots.js";
+import { DEFAULT_LISTENER_PORT, hookRpcMethods } from "./hook-contract.js";
+import { createHookService } from "./hook.js";
+import { createHookListener } from "./listener.js";
+import { parseAllowedBaseUrls } from "./verify.js";
 
 const ReasoningLevel = z.enum([
   "none",
@@ -124,6 +128,8 @@ const NewThreadRequestSchema = z.object({
 });
 
 export const rpcContract = defineRpcContract({
+  // Webhook methods: getHook, saveHook, revealSecret, rotateSecret.
+  ...hookRpcMethods,
   listBots: {
     input: z.null(),
     output: z.object({ bots: z.array(BotSchema) }),
@@ -247,6 +253,26 @@ export default async function plugin(bb: BbPluginApi) {
     // separate backfill statement or code path.
     `ALTER TABLE bots ADD COLUMN status TEXT NOT NULL DEFAULT 'published'`,
     `ALTER TABLE bots ADD COLUMN avatar_json TEXT`,
+    // Webhook. A row per bot that ever opened its Webhook section; the
+    // secret itself is derived from hook-master.key, so only its version is
+    // stored.
+    `CREATE TABLE IF NOT EXISTS bot_hooks (
+       bot_id             TEXT PRIMARY KEY,
+       enabled            INTEGER NOT NULL DEFAULT 0,
+       secret_version     INTEGER NOT NULL DEFAULT 1,
+       rate_limit_per_min INTEGER NOT NULL DEFAULT 10,
+       created_at         INTEGER NOT NULL
+     )`,
+    // One row per accepted delivery: the replay guard and the claim lock.
+    `CREATE TABLE IF NOT EXISTS hook_seen (
+       bot_id     TEXT NOT NULL,
+       signature  TEXT NOT NULL,
+       idem_key   TEXT,
+       claimed_at INTEGER NOT NULL,
+       thread_id  TEXT,
+       UNIQUE (bot_id, signature)
+     )`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS hook_seen_idem ON hook_seen(bot_id, idem_key) WHERE idem_key IS NOT NULL`,
   ]);
 
   // contributeInstructions is synchronous and sits on the thread-start path,
@@ -286,6 +312,63 @@ export default async function plugin(bb: BbPluginApi) {
   function announce() {
     bb.realtime.publish("bots", { changedAt: Date.now() });
   }
+
+  // Shared by startChat and the webhook: the bot_threads row is what makes
+  // contributeInstructions apply the persona to the new thread.
+  function recordThread(botId: string, threadId: string) {
+    db.prepare(
+      "INSERT INTO bot_threads (thread_id, bot_id, created_at) VALUES (?, ?, ?)",
+    ).run(threadId, botId, Date.now());
+    botIdByThreadId.set(threadId, botId);
+  }
+
+  // Webhook settings. The SDK's descriptors have no number type and no
+  // validator, so the port is a string and a bad value is rejected where it
+  // is read (parseListenerPort, parseAllowedBaseUrls); the editor shows why.
+  const settings = bb.settings.define({
+    allowedBaseUrls: {
+      type: "string",
+      label: "Allowed base URLs",
+      description:
+        "Hosts that may call your bots' webhooks. Comma-separated full URLs, for example https://hooks.example.com. Point your tunnel at the listener port.",
+      default: "",
+    },
+    listenerPort: {
+      type: "string",
+      label: "Listener port",
+      description: "The webhook listener binds 127.0.0.1 on this port (1024–65535).",
+      default: DEFAULT_LISTENER_PORT,
+    },
+  });
+
+  const hooks = createHookService({
+    bb,
+    db,
+    getBot: (botId) => botsById.get(botId),
+    // A webhook thread starts without anyone watching, so tell open panels
+    // to refresh their chat lists.
+    recordThread: (botId, threadId) => {
+      recordThread(botId, threadId);
+      announce();
+    },
+    readBaseUrls: async () => parseAllowedBaseUrls((await settings.get()).allowedBaseUrls),
+    listenerStatus: () => listener.status(),
+  });
+
+  // The plugin's own listener on 127.0.0.1. BB's HTTP server never sees
+  // webhook traffic. It opens only while a published bot has its hook on and
+  // a base URL is valid; reconcile() runs wherever one of those can change.
+  const listener = createHookListener({
+    bb,
+    readSettings: () => settings.get(),
+    liveBotCount: hooks.liveBotCount,
+    isLive: hooks.isLive,
+    processDelivery: hooks.processDelivery,
+  });
+  bb.onDispose(() => listener.dispose());
+  settings.onChange(() => {
+    void listener.reconcile();
+  });
 
   bb.rpc.register(rpcContract, {
     listBots: () => ({
@@ -385,7 +468,7 @@ export default async function plugin(bb: BbPluginApi) {
 
     // Publishing an already-published bot is a no-op success — the editor
     // doesn't need to know which state it started in.
-    publishBot: ({ botId }) => {
+    publishBot: async ({ botId }) => {
       const existing = readBot(botId);
       if (existing.status === "published") return { ok: true };
       const blockers = draftBlockers(existing);
@@ -404,12 +487,14 @@ export default async function plugin(bb: BbPluginApi) {
       );
       botsById.set(bot.id, bot);
       announce();
+      await listener.reconcile();
       return { ok: true };
     },
 
     // Deletes the bot and its thread mappings. The threads themselves are real
     // conversations, so they stay — they just stop receiving the persona.
-    deleteBot: ({ botId }) => {
+    deleteBot: async ({ botId }) => {
+      hooks.forgetBot(botId);
       db.prepare("DELETE FROM bot_threads WHERE bot_id = ?").run(botId);
       db.prepare("DELETE FROM bots WHERE id = ?").run(botId);
       botsById.delete(botId);
@@ -417,6 +502,7 @@ export default async function plugin(bb: BbPluginApi) {
         if (mapped === botId) botIdByThreadId.delete(threadId);
       }
       announce();
+      await listener.reconcile();
       return { ok: true };
     },
 
@@ -554,10 +640,7 @@ export default async function plugin(bb: BbPluginApi) {
         spawnArgs as Parameters<typeof bb.sdk.threads.spawn>[0],
       );
 
-      db.prepare(
-        "INSERT INTO bot_threads (thread_id, bot_id, created_at) VALUES (?, ?, ?)",
-      ).run(thread.id, bot.id, Date.now());
-      botIdByThreadId.set(thread.id, bot.id);
+      recordThread(bot.id, thread.id);
       bb.log.info(`started chat ${thread.id} for bot ${bot.id}`);
       return { threadId: thread.id };
     },
@@ -619,7 +702,36 @@ export default async function plugin(bb: BbPluginApi) {
         })),
       };
     },
+
+    // Webhook. Each throws for an unknown bot via readBot. A draft bot has a
+    // hook too — the editor shows it — but the listener refuses to fire it.
+    getHook: async ({ botId }) => {
+      readBot(botId);
+      return { hook: await hooks.getState(botId) };
+    },
+
+    // The contract schema already bounds rateLimitPerMin, so nothing is
+    // clamped here.
+    saveHook: async ({ botId, enabled, rateLimitPerMin }) => {
+      readBot(botId);
+      hooks.save(botId, enabled, rateLimitPerMin);
+      await listener.reconcile();
+      return { hook: await hooks.getState(botId) };
+    },
+
+    revealSecret: ({ botId }) => {
+      readBot(botId);
+      return { secret: hooks.revealSecret(botId) };
+    },
+
+    rotateSecret: async ({ botId }) => {
+      readBot(botId);
+      return hooks.rotateSecret(botId);
+    },
   });
+
+  // Open the port now if a bot already has its hook on. Never fails the load.
+  await listener.reconcile();
 
   // Keep the mapping from growing without bound. Archived threads are still
   // resumable, so only deletion drops the persona link.

@@ -22,6 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { BotAvatar } from "@/components/BotAvatar";
+import { BotWebhook } from "@/components/BotWebhook";
 import { EmojiPicker } from "@/components/EmojiPicker";
 import { useBotsRpc, useQuery } from "@/components/use-query";
 import { PANEL_PATH } from "@/components/panel-path";
@@ -516,6 +517,8 @@ export function BotEditor({ botId }: { botId: string }) {
           </Select>
         </div>
       </div>
+
+      {bot.id !== "" ? <BotWebhook botId={bot.id} isDraft={isDraft} /> : null}
 
       <div className="flex items-center gap-2">
         {isDraft ? (
