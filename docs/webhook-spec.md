@@ -211,10 +211,11 @@ Two more lines exist for states the plan table does not name: `○ Starting the 
 - `Reveal` calls `revealSecret` and shows the value. A second click hides it. `Copy` copies the secret without showing it.
 - `Rotate` asks first: `The old secret stops working at once.` Then calls `rotateSecret` and shows the new secret.
 - The rate limit input saves after a short delay. Keep the value inside the contract bounds.
-- `Copy curl example` uses `primaryUrl` and never contains the real secret. It is disabled when `primaryUrl` is `null`:
+- The editor shows one complete URL. When multiple URLs exist, a base URL selector changes the displayed URL.
+- `Copy curl example` uses the selected URL and never contains the real secret. It is disabled when no URL exists:
 
 ```
-URL='<primaryUrl>'
+URL='<selected URL>'
 SECRET='whsec_REPLACE_ME'   # use Reveal in the bot editor
 BODY='{"text":"hello"}'
 TS=$(date +%s)

@@ -1003,7 +1003,7 @@ describe("bot editor webhook section", () => {
     slot.lifecycle.unmount();
   });
 
-  it("lists one URL per base URL, each with its own Copy, and no local-only notice", async () => {
+  it("selects a base URL and copies the complete webhook URL", async () => {
     const writeText = stubClipboard();
     const urls = ["https://hooks.you.com/hooks/bot_1", "http://127.0.0.1:38990/hooks/bot_1"];
     const panel = await loadPanel();
@@ -1017,16 +1017,13 @@ describe("bot editor webhook section", () => {
         },
       },
     );
-    for (const url of urls) {
-      expect(((await slot.findByLabelText(`Webhook URL ${url}`)) as HTMLInputElement).value).toBe(url);
-    }
-    expect(slot.queryByText(/Local only/)).toBeNull();
-    expect(slot.queryByRole("button", { name: "Copy local" })).toBeNull();
-
-    fireEvent.click(slot.getByRole("button", { name: `Copy ${urls[1]}` }));
+    expect(((await slot.findByLabelText("Webhook URL")) as HTMLInputElement).value).toBe(urls[0]);
+    fireEvent.change(slot.getByLabelText("Base URL"), { target: { value: urls[1] } });
+    expect((slot.getByLabelText("Webhook URL") as HTMLInputElement).value).toBe(urls[1]);
+    fireEvent.click(slot.getByRole("button", { name: "Copy webhook URL" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(urls[1]));
-    fireEvent.click(slot.getByRole("button", { name: `Copy ${urls[0]}` }));
-    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(urls[0]));
+    fireEvent.click(slot.getByRole("button", { name: "Copy curl example" }));
+    await waitFor(() => expect(writeText.mock.calls.at(-1)![0]).toContain(`URL='${urls[1]}'`));
     slot.lifecycle.unmount();
   });
 
@@ -1242,7 +1239,7 @@ describe("bot editor webhook section", () => {
     slot.lifecycle.unmount();
   });
 
-  it("builds the curl example from the primary URL, and disables it without one", async () => {
+  it("builds the curl example from the initial URL, and disables it without one", async () => {
     const writeText = stubClipboard();
     const panel = await loadPanel();
     const urls = ["https://hooks.you.com/hooks/bot_1", "http://127.0.0.1:38990/hooks/bot_1"];
@@ -1273,6 +1270,7 @@ describe("bot editor webhook section", () => {
     );
     const button = (await none.findByRole("button", { name: "Copy curl example" })) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
+    expect(none.getByText(/Add a base URL in Settings/)).toBeTruthy();
     none.lifecycle.unmount();
   });
 });

@@ -164,10 +164,10 @@ A request passes these checks, in this order:
    not add a path, a query or a fragment. A bad entry is ignored, and the bot
    editor says so.
 2. Optional: change **Listener port** (1024 to 65535, default `38990`).
-3. Point your tunnel at `http://127.0.0.1:<listener port>`.
+3. Point your tunnel at `http://127.0.0.1:<listener port>` and configure it to preserve the configured public `Host` header.
 4. Open the bot editor, go to **Webhook**, and turn on **Enabled**. Only a
-   published bot can fire. The editor shows one URL for each allowed base URL,
-   and says whether the listener is running.
+   published bot can fire. The editor shows the complete webhook URL and listener status.
+   If you configure multiple base URLs, select one to copy its webhook URL.
 5. Use **Reveal** to see the secret and **Rotate** to replace it. The old
    secret stops working at once.
 

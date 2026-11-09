@@ -330,7 +330,7 @@ export default async function plugin(bb: BbPluginApi) {
       type: "string",
       label: "Allowed base URLs",
       description:
-        "Hosts that may call your bots' webhooks. Comma-separated full URLs, for example https://hooks.example.com. Point your tunnel at the listener port.",
+        "Comma-separated origins, for example https://hooks.example.com. Point your tunnel at the listener port and preserve the configured Host header.",
       default: "",
     },
     listenerPort: {

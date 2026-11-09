@@ -140,12 +140,14 @@ export function BotWebhook({ botId, isDraft }: { botId: string; isDraft: boolean
   // The latest server view of the hook (URLs, listener, version). Editable
   // fields below are seeded from it once and then owned by the form.
   const [hook, setHook] = useState<HookState | null>(null);
+  const [selectedUrl, setSelectedUrl] = useState<string | null>(null);
   const [enabled, setEnabled] = useState(false);
   const [rateText, setRateText] = useState("");
   const [isSeeded, setIsSeeded] = useState(false);
   const [secret, setSecret] = useState<string | null>(null);
   const [isRevealed, setIsRevealed] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
+  const activeUrl = hook?.urls.includes(selectedUrl ?? "") ? selectedUrl : hook?.urls[0] ?? null;
   const [rotateDialogOpen, setRotateDialogOpen] = useState(false);
 
   // The last values the server confirmed, so autosave only sends real changes.
@@ -347,30 +349,38 @@ export function BotWebhook({ botId, isDraft }: { botId: string; isDraft: boolean
             </div>
           ) : null}
 
-          {hook.urls.length > 0 ? (
+          {activeUrl !== null ? (
             <div className="space-y-2">
-              <Label>URLs</Label>
-              {hook.urls.map((url) => (
-                <div key={url} className="flex items-center gap-2">
+              {hook.urls.length > 1 ? (
+                <div className="space-y-2">
+                  <Label htmlFor="bot-webhook-base-url">Base URL</Label>
+                  <select id="bot-webhook-base-url" value={activeUrl} onChange={(event) => setSelectedUrl(event.target.value)} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
+                    {hook.urls.map((url) => <option key={url} value={url}>{new URL(url).origin}</option>)}
+                  </select>
+                </div>
+              ) : null}
+              <Label htmlFor="bot-webhook-url">Webhook URL</Label>
+                <div className="flex items-center gap-2">
                   <Input
-                    value={url}
+                    id="bot-webhook-url"
+                    value={activeUrl}
                     readOnly
-                    aria-label={`Webhook URL ${url}`}
                     className="font-mono text-xs"
                   />
                   <Button
                     type="button"
                     size="sm"
                     variant="outline"
-                    aria-label={`Copy ${url}`}
-                    onClick={() => void copyText(url, "URL")}
+                    aria-label="Copy webhook URL"
+                    onClick={() => void copyText(activeUrl, "URL")}
                   >
                     Copy
                   </Button>
                 </div>
-              ))}
             </div>
-          ) : null}
+          ) : (
+            <p className="text-sm text-muted-foreground">Add a base URL in Settings → Installed plugins → Bots to create a webhook URL.</p>
+          )}
 
           <div className="space-y-2">
             <Label htmlFor="bot-webhook-secret">Secret</Label>
@@ -439,10 +449,10 @@ export function BotWebhook({ botId, isDraft }: { botId: string; isDraft: boolean
             type="button"
             size="sm"
             variant="outline"
-            disabled={hook.primaryUrl === null}
+            disabled={activeUrl === null}
             onClick={() => {
-              if (hook.primaryUrl !== null) {
-                void copyText(curlExample(hook.primaryUrl), "curl example");
+              if (activeUrl !== null) {
+                void copyText(curlExample(activeUrl), "curl example");
               }
             }}
           >
