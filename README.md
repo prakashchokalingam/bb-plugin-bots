@@ -45,7 +45,7 @@ With Bots, you can:
 - keep bots without a project for everyday conversations
 - create drafts before making a bot available to chat with
 - keep chat history as normal BB threads
-- choose an animated blob avatar or an emoji for each bot
+- choose an animated blob avatar (including question, exclaim, plus, and hash shapes) or an emoji for each bot
 - expand a bot in the rail to open recent threads and see their states
 
 A bot is not a separate chat app. It lives in BB and uses BB's existing thread,

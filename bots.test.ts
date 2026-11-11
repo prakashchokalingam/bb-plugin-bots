@@ -9,6 +9,7 @@ import {
   isSingleEmoji,
   MAX_INSTRUCTIONS,
   normalizeEmoji,
+  parseAvatar,
   parseRoute,
   pickEmoji,
   previewInstructions,
@@ -363,5 +364,16 @@ describe("rowToBot", () => {
   it("reads an out-of-union stored reasoning level as unset", () => {
     expect(REASONING_LEVELS).not.toContain("turbo");
     expect(rowToBot({ ...row, reasoning_level: "turbo" }).reasoningLevel).toBeNull();
+  });
+});
+
+describe("parseAvatar", () => {
+  it.each(["question", "exclaim", "plus", "hash"])("accepts the %s shape", (shape) => {
+    const avatar = { version: 1, type: "blob", shape, color: "#123abc" };
+    expect(parseAvatar(JSON.stringify(avatar))).toEqual(avatar);
+  });
+
+  it("rejects an unknown shape", () => {
+    expect(parseAvatar(JSON.stringify({ version: 1, type: "blob", shape: "spiral", color: "#123abc" }))).toBeNull();
   });
 });

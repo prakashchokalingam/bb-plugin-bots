@@ -13,7 +13,17 @@ const PATHS = {
   hexagon: "M34 10 Q38 8 42 8 L58 8 Q62 8 66 10 L85 22 Q90 25 90 31 L90 69 Q90 75 85 78 L66 90 Q62 92 58 92 L42 92 Q38 92 34 90 L15 78 Q10 75 10 69 L10 31 Q10 25 15 22Z",
   sun: "M50 5 Q55 5 58 16 Q62 23 69 16 Q77 10 80 16 Q84 20 80 29 Q79 35 88 36 Q99 38 95 46 Q94 50 87 54 Q82 59 89 66 Q95 74 88 78 Q84 81 76 78 Q69 77 66 86 Q62 97 55 92 Q50 88 46 93 Q38 97 35 86 Q32 78 25 80 Q15 83 13 76 Q11 71 17 64 Q22 58 13 54 Q4 49 7 42 Q9 37 18 36 Q26 35 22 27 Q18 17 25 15 Q30 13 37 20 Q43 24 45 14 Q46 5 50 5Z",
   triangle: "M43 13 Q50 2 57 13 L91 76 Q97 88 83 89 L17 89 Q3 88 9 76Z",
+  question: "M22 34 C22 14 38 4 54 4 C76 4 90 18 90 35 C90 52 74 56 68 64 C64 69 64 72 64 76 L40 76 C40 64 44 57 52 50 C60 43 66 41 66 35 C66 30 61 27 55 27 C46 27 46 33 46 36 Z M52 80 a8 8 0 1 0 .01 0Z",
+  exclaim: "M36 10 Q50 0 64 10 Q68 13 67 19 L62 62 Q61 70 50 70 Q39 70 38 62 L33 19 Q32 13 36 10Z M50 76 a10 10 0 1 0 .01 0Z",
+  plus: "M38 10 Q50 4 62 10 L62 38 L90 38 Q96 50 90 62 L62 62 L62 90 Q50 96 38 90 L38 62 L10 62 Q4 50 10 38 L38 38Z",
+  hash: "M22 6 H42 V22 H58 V6 H78 V22 H94 V42 H78 V58 H94 V78 H78 V94 H58 V78 H42 V94 H22 V78 H6 V58 H22 V42 H6 V22 H22Z M42 42 V58 H58 V42Z",
 } as const;
+const EYES: Partial<Record<keyof typeof PATHS, readonly [readonly [number, number], readonly [number, number]]>> = {
+  question: [[44, 18], [60, 18]],
+  exclaim: [[43, 26], [57, 26]],
+  plus: [[42, 50], [58, 50]],
+  hash: [[32, 50], [68, 50]],
+};
 export function BotAvatar({ botId, emoji, avatar, size = "md", className, animated = false, animateOnHover = false }: { botId: string; emoji: string; avatar?: BlobAvatar | null; size?: keyof typeof SIZES; className?: string; animated?: boolean; animateOnHover?: boolean }) {
   const ref = useRef<HTMLSpanElement>(null);
   const [visible, setVisible] = useState(false);
@@ -34,7 +44,7 @@ export function BotAvatar({ botId, emoji, avatar, size = "md", className, animat
     const eyes = luminance > .18 ? "#17131f" : "#ffffff";
     return <span ref={ref} aria-hidden className={cn("flex shrink-0 items-center justify-center", SIZES[size], className)}>
       {(animated || animateOnHover) && <style>{`@keyframes bot-avatar-breathe { 0%,100% { transform: scale(1) } 50% { transform: scale(1.035, .97) } } @keyframes bot-avatar-blink { 0%, 44%, 47%, 100% { transform: scaleY(1) } 45.5% { transform: scaleY(.08) } } @media (prefers-reduced-motion: no-preference) { .bot-avatar-motion { animation: bot-avatar-breathe 4s ease-in-out infinite; transform-origin: center; } .bot-avatar-eyes { animation: bot-avatar-blink 6s ease-in-out infinite; transform-origin: 50px 50px; } .bot-avatar-paused, .bot-avatar-paused .bot-avatar-eyes { animation-play-state: paused; } .bot-rail-trigger:hover .bot-avatar-hover, .bot-rail-trigger:focus-visible .bot-avatar-hover { animation: bot-avatar-breathe 4s ease-in-out infinite; transform-origin: center; } .bot-rail-trigger:hover .bot-avatar-hover-eyes, .bot-rail-trigger:focus-visible .bot-avatar-hover-eyes { animation: bot-avatar-blink 6s ease-in-out infinite; transform-origin: 50px 50px; } }`}</style>}
-      <svg className={animated ? cn("bot-avatar-motion", !visible && "bot-avatar-paused") : animateOnHover ? "bot-avatar-hover" : undefined} viewBox="0 0 100 100" width="100%" height="100%"><path d={PATHS[avatar.shape]} fill={avatar.color} stroke="currentColor" strokeOpacity=".16" strokeWidth="2"/><g className={animated ? "bot-avatar-eyes" : animateOnHover ? "bot-avatar-hover-eyes" : undefined}><ellipse cx="40" cy="50" rx="4" ry="6" fill={eyes}/><ellipse cx="60" cy="50" rx="4" ry="6" fill={eyes}/></g></svg></span>;
+      <svg className={animated ? cn("bot-avatar-motion", !visible && "bot-avatar-paused") : animateOnHover ? "bot-avatar-hover" : undefined} viewBox="0 0 100 100" width="100%" height="100%"><path d={PATHS[avatar.shape]} fill={avatar.color} stroke="currentColor" strokeOpacity=".16" strokeWidth="2"/><g className={animated ? "bot-avatar-eyes" : animateOnHover ? "bot-avatar-hover-eyes" : undefined}>{(EYES[avatar.shape] ?? [[40, 50], [60, 50]]).map(([x, y]) => <ellipse key={x} cx={x} cy={y} rx={avatar.shape === "hash" ? 3 : 4} ry="6" fill={eyes}/>)}</g></svg></span>;
   }
   return <span aria-hidden className={cn("flex shrink-0 items-center justify-center rounded-lg", SIZES[size], tintFor(botId), className)}>{emoji}</span>;
 }
