@@ -6,6 +6,7 @@
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
+  AVATAR_SHAPES,
   clampInstructions,
   draftBlockers,
   MAX_INSTRUCTIONS,
@@ -35,7 +36,7 @@ const ReasoningLevel = z.enum([
   "ultracode",
 ]);
 
-const AvatarSchema = z.object({ version: z.literal(1), type: z.literal("blob"), shape: z.enum(["round", "flower", "star", "cloud", "heart", "shield", "hexagon", "sun", "triangle"]), color: z.string().regex(/^#[0-9a-fA-F]{6}$/) }).strict();
+const AvatarSchema = z.object({ version: z.literal(1), type: z.literal("blob"), shape: z.enum(AVATAR_SHAPES), color: z.string().regex(/^#[0-9a-fA-F]{6}$/) }).strict();
 
 const BotSchema = z.object({
   id: z.string(),

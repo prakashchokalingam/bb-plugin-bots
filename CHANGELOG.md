@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Choose the question, exclaim, plus, or hash blob avatar shape.
+
 ## [1.3.0] - 2026-11-03
 
 ### Added

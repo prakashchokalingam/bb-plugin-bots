@@ -332,6 +332,13 @@ describe("persistence", () => {
     expect(await legacy.harness.behavior.callRpc("getBot", { botId: "legacy" })).toMatchObject({ bot: { emoji: "🦉", avatar: null, instructions: "Old instructions" } });
   });
 
+  it.each(["question", "exclaim", "plus", "hash"])("persists the %s avatar shape", async (shape) => {
+    const { botId } = await host.harness.behavior.callRpc("createBot", null) as { botId: string };
+    const avatar = { version: 1, type: "blob", shape, color: "#123abc" };
+    await host.harness.behavior.callRpc("saveBot", { botId, patch: { avatar } });
+    expect(await host.harness.behavior.callRpc("getBot", { botId })).toMatchObject({ bot: { avatar } });
+  });
+
   it("falls back to emoji for stored avatar data with unknown fields", async () => {
     const { botId } = await host.harness.behavior.callRpc("createBot", null) as { botId: string };
     const db = host.bb.storage.database();
