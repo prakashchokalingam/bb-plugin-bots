@@ -57,7 +57,7 @@ export type ReasoningLevel = (typeof REASONING_LEVELS)[number];
 
 export type BotStatus = "draft" | "published";
 
-export const AVATAR_SHAPES = ["round", "flower", "star", "cloud", "heart", "shield", "hexagon", "sun", "triangle"] as const;
+export const AVATAR_SHAPES = ["round", "flower", "star", "cloud", "heart", "shield", "hexagon", "sun", "triangle", "question", "exclaim", "plus", "hash"] as const;
 export const AVATAR_COLORS = ["#a78bfa", "#60a5fa", "#fb927c", "#4ade80", "#fbbf24", "#f472b6"] as const;
 export type BlobAvatar = { version: 1; type: "blob"; shape: typeof AVATAR_SHAPES[number]; color: string };
 export function randomAvatar(): BlobAvatar {

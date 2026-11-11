@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, waitFor } from "@testing-library/react";
+import { fireEvent, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { EMOJIS } from "./bots";
 import { formatRelative } from "./components/relative-time";
@@ -531,6 +531,23 @@ describe("bots nav panel", () => {
     expect(slot.queryByRole("group", { name: "More shapes" })).toBeNull();
     expect(slot.getByRole("button", { name: "triangle" }).getAttribute("aria-pressed")).toBe("true");
     expect(slot.getByRole("button", { name: "More shapes" }).getAttribute("aria-expanded")).toBe("false");
+    slot.lifecycle.unmount();
+  });
+
+  it("lists the punctuation shapes and saves a selected one", async () => {
+    const panel = await loadPanel();
+    const slot = renderSlot(panel, { subPath: "bot_1/edit" }, { rpc: RPC });
+    fireEvent.click(await slot.findByLabelText("Change icon"));
+    fireEvent.click(await slot.findByRole("button", { name: "Blob" }));
+    fireEvent.click(slot.getByRole("button", { name: "More shapes" }));
+    const popup = within(slot.getByRole("group", { name: "More shapes" }));
+    for (const shape of ["question", "exclaim", "plus", "hash"]) expect(popup.getByRole("button", { name: shape })).toBeTruthy();
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(popup.getByRole("button", { name: "hash" }));
+      await vi.advanceTimersByTimeAsync(600);
+      expect(slot.inspection.rpcCalls.find(call => call.method === "saveBot")?.input).toMatchObject({ patch: { avatar: { version: 1, type: "blob", shape: "hash" } } });
+    } finally { vi.useRealTimers(); }
     slot.lifecycle.unmount();
   });
 
