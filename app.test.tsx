@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { EMOJIS } from "./bots";
+import { HOOK_RATE_LIMIT_MAX, type HookState } from "./hook-contract";
 import { formatRelative } from "./components/relative-time";
 
 describe("relative timestamps", () => {
@@ -93,6 +94,43 @@ const BOTS_BY_ID: Record<
   bot_3: BOT_DRAFT,
 };
 
+const REAL_SECRET = "whsec_0123456789abcdef";
+const ROTATED_SECRET = "whsec_fedcba9876543210";
+
+function hookState(botId: string, overrides: Partial<HookState> = {}): HookState {
+  return {
+    botId,
+    enabled: false,
+    rateLimitPerMin: 10,
+    secretVersion: 1,
+    urls: [`http://127.0.0.1:38990/hooks/${botId}`],
+    primaryUrl: `http://127.0.0.1:38990/hooks/${botId}`,
+    ignoredBaseUrls: [],
+    listener: { state: "running", port: 38990, reason: null },
+    ...overrides,
+  };
+}
+
+const HOOK_RPC = {
+  getHook: (input: unknown) => {
+    const { botId } = input as { botId: string };
+    return { hook: hookState(botId) };
+  },
+  saveHook: (input: unknown) => {
+    const { botId, enabled, rateLimitPerMin } = input as {
+      botId: string;
+      enabled: boolean;
+      rateLimitPerMin: number;
+    };
+    return { hook: hookState(botId, { enabled, rateLimitPerMin }) };
+  },
+  revealSecret: () => ({ secret: REAL_SECRET }),
+  rotateSecret: (input: unknown) => {
+    const { botId } = input as { botId: string };
+    return { secret: ROTATED_SECRET, hook: hookState(botId, { secretVersion: 2 }) };
+  },
+};
+
 const RPC = {
   listRail: () => ({ bots: RAIL_BOTS }),
   getBot: (input: unknown) => {
@@ -141,6 +179,7 @@ const RPC = {
   saveBot: () => ({ ok: true }),
   publishBot: () => ({ ok: true }),
   deleteBot: () => ({ ok: true }),
+  ...HOOK_RPC,
 };
 
 async function loadPanel() {
@@ -924,5 +963,331 @@ describe("bots nav panel", () => {
       expect(call?.input).toEqual({ threadId: "thr_old" });
     });
     slot.lifecycle.unmount();
+  });
+});
+
+describe("bot editor webhook section", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function stubClipboard() {
+    const writeText = vi.fn(async (_text: string) => {});
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    return writeText;
+  }
+
+  it("saves the Enabled toggle at once", async () => {
+    const panel = await loadPanel();
+    const slot = renderSlot(panel, { subPath: "bot_1/edit" }, { rpc: RPC });
+
+    const toggle = (await slot.findByLabelText("Enabled")) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      const call = slot.inspection.rpcCalls.find((call) => call.method === "saveHook");
+      expect(call?.input).toEqual({ botId: "bot_1", enabled: true, rateLimitPerMin: 10 });
+    });
+    expect(toggle.checked).toBe(true);
+    slot.lifecycle.unmount();
+  });
+
+  it("autosaves the rate limit after the debounce, kept inside the contract bounds", async () => {
+    const panel = await loadPanel();
+    const slot = renderSlot(panel, { subPath: "bot_1/edit" }, { rpc: RPC });
+
+    const rate = await slot.findByLabelText("Rate limit");
+    vi.useFakeTimers();
+    try {
+      fireEvent.change(rate, { target: { value: "9999" } });
+      expect(
+        slot.inspection.rpcCalls.some((call) => call.method === "saveHook"),
+      ).toBe(false);
+      await vi.advanceTimersByTimeAsync(600);
+      const call = slot.inspection.rpcCalls.find((call) => call.method === "saveHook");
+      expect(call?.input).toEqual({
+        botId: "bot_1",
+        enabled: false,
+        rateLimitPerMin: HOOK_RATE_LIMIT_MAX,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    slot.lifecycle.unmount();
+  });
+
+  it("selects a base URL and copies the complete webhook URL", async () => {
+    const writeText = stubClipboard();
+    const urls = ["https://hooks.you.com/hooks/bot_1", "http://127.0.0.1:38990/hooks/bot_1"];
+    const panel = await loadPanel();
+    const slot = renderSlot(
+      panel,
+      { subPath: "bot_1/edit" },
+      {
+        rpc: {
+          ...RPC,
+          getHook: () => ({ hook: hookState("bot_1", { urls, primaryUrl: urls[0]! }) }),
+        },
+      },
+    );
+    expect(((await slot.findByLabelText("Webhook URL")) as HTMLInputElement).value).toBe(urls[0]);
+    fireEvent.change(slot.getByLabelText("Base URL"), { target: { value: urls[1] } });
+    expect((slot.getByLabelText("Webhook URL") as HTMLInputElement).value).toBe(urls[1]);
+    fireEvent.click(slot.getByRole("button", { name: "Copy webhook URL" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(urls[1]));
+    fireEvent.click(slot.getByRole("button", { name: "Copy curl example" }));
+    await waitFor(() => expect(writeText.mock.calls.at(-1)![0]).toContain(`URL='${urls[1]}'`));
+    slot.lifecycle.unmount();
+  });
+
+  describe("listener status line", () => {
+    async function showHook(botId: string, hook: Partial<HookState>) {
+      const panel = await loadPanel();
+      return renderSlot(
+        panel,
+        { subPath: `${botId}/edit` },
+        { rpc: { ...RPC, getHook: () => ({ hook: hookState(botId, { enabled: true, ...hook }) }) } },
+      );
+    }
+
+    it("running: Listening on 127.0.0.1:<port> — point your tunnel here", async () => {
+      const slot = await showHook("bot_1", {
+        listener: { state: "running", port: 38995, reason: null },
+      });
+      await slot.findByText("Listening on 127.0.0.1:38995 — point your tunnel here");
+      slot.lifecycle.unmount();
+    });
+
+    it("no base URL: Stopped — add a base URL in plugin settings", async () => {
+      const slot = await showHook("bot_1", {
+        urls: [],
+        primaryUrl: null,
+        listener: { state: "stopped", port: 38990, reason: null },
+      });
+      await slot.findByText("Stopped — add a base URL in plugin settings");
+      expect(slot.queryByText(/Listening on/)).toBeNull();
+      expect(slot.queryByText("URLs")).toBeNull();
+      slot.lifecycle.unmount();
+    });
+
+    it("draft bot: Publish this bot to receive webhooks", async () => {
+      const slot = await showHook("bot_3", {});
+      await slot.findByText("Publish this bot to receive webhooks");
+      expect(slot.queryByText(/Listening on/)).toBeNull();
+      slot.lifecycle.unmount();
+    });
+
+    it("port in use: Port <port> is in use — choose another port in plugin settings", async () => {
+      const slot = await showHook("bot_1", {
+        listener: { state: "error", port: 38990, reason: "port-in-use" },
+      });
+      await slot.findByText("Port 38990 is in use — choose another port in plugin settings");
+      slot.lifecycle.unmount();
+    });
+
+    it("invalid base URL entry: \"<entry>\" ignored — use a full URL that starts with https://", async () => {
+      const slot = await showHook("bot_1", { ignoredBaseUrls: ["hooks.you.com"] });
+      await slot.findByText('"hooks.you.com" ignored — use a full URL that starts with https://');
+      // The entry that was ignored sits next to the state of the listener.
+      await slot.findByText(/Listening on 127\.0\.0\.1:38990/);
+      slot.lifecycle.unmount();
+    });
+
+    it("an invalid port setting and any other listener error are shown", async () => {
+      const invalid = await showHook("bot_1", {
+        listener: { state: "error", port: 38990, reason: "port-invalid" },
+      });
+      await invalid.findByText(/The listener port must be a whole number from 1024 to 65535/);
+      invalid.lifecycle.unmount();
+
+      const other = await showHook("bot_1", {
+        listener: { state: "error", port: 38990, reason: "EACCES" },
+      });
+      await other.findByText("The listener could not start — EACCES");
+      other.lifecycle.unmount();
+    });
+
+    it("asks again while the listener is still starting, then shows the result", async () => {
+      let calls = 0;
+      const panel = await loadPanel();
+      const slot = renderSlot(
+        panel,
+        { subPath: "bot_1/edit" },
+        {
+          rpc: {
+            ...RPC,
+            getHook: () => {
+              calls += 1;
+              return {
+                hook: hookState("bot_1", {
+                  enabled: true,
+                  listener:
+                    calls < 2
+                      ? { state: "stopped", port: 38990, reason: "starting" }
+                      : { state: "running", port: 38990, reason: null },
+                }),
+              };
+            },
+          },
+        },
+      );
+      await slot.findByText("Starting the listener…");
+      await slot.findByText("Listening on 127.0.0.1:38990 — point your tunnel here", undefined, {
+        timeout: 4000,
+      });
+      expect(calls).toBe(2);
+      slot.lifecycle.unmount();
+    });
+
+    it("shows no status line while the webhook is off", async () => {
+      const panel = await loadPanel();
+      const slot = renderSlot(panel, { subPath: "bot_1/edit" }, { rpc: RPC });
+      await slot.findByLabelText("Enabled");
+      expect(slot.queryByText(/Listening on/)).toBeNull();
+      expect(slot.queryByRole("status")).toBeNull();
+      slot.lifecycle.unmount();
+    });
+  });
+
+  it("reveals the secret on the first click and hides it on the second", async () => {
+    const panel = await loadPanel();
+    const slot = renderSlot(panel, { subPath: "bot_1/edit" }, { rpc: RPC });
+
+    const secret = (await slot.findByLabelText("Secret")) as HTMLInputElement;
+    expect(secret.value).toBe("whsec_••••••••");
+    expect(
+      slot.inspection.rpcCalls.some((call) => call.method === "revealSecret"),
+    ).toBe(false);
+
+    fireEvent.click(slot.getByRole("button", { name: "Reveal" }));
+    await waitFor(() => expect(secret.value).toBe(REAL_SECRET));
+    expect(
+      slot.inspection.rpcCalls.find((call) => call.method === "revealSecret")?.input,
+    ).toEqual({ botId: "bot_1" });
+
+    fireEvent.click(slot.getByRole("button", { name: "Hide" }));
+    expect(secret.value).toBe("whsec_••••••••");
+    slot.lifecycle.unmount();
+  });
+
+  it("copies the secret without showing it", async () => {
+    const writeText = stubClipboard();
+    const panel = await loadPanel();
+    const slot = renderSlot(panel, { subPath: "bot_1/edit" }, { rpc: RPC });
+
+    fireEvent.click(await slot.findByRole("button", { name: "Copy secret" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(REAL_SECRET));
+    expect((slot.getByLabelText("Secret") as HTMLInputElement).value).toBe(
+      "whsec_••••••••",
+    );
+    slot.lifecycle.unmount();
+  });
+
+  it("asks before Rotate, then shows the new secret", async () => {
+    const panel = await loadPanel();
+    const slot = renderSlot(panel, { subPath: "bot_1/edit" }, { rpc: RPC });
+
+    fireEvent.click(await slot.findByRole("button", { name: "Rotate" }));
+    await slot.findByText("The old secret stops working at once.");
+    fireEvent.click(await slot.findByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(slot.queryByText("The old secret stops working at once.")).toBeNull(),
+    );
+    expect(
+      slot.inspection.rpcCalls.some((call) => call.method === "rotateSecret"),
+    ).toBe(false);
+
+    fireEvent.click(slot.getByRole("button", { name: "Rotate" }));
+    fireEvent.click(await slot.findByRole("button", { name: "Rotate secret" }));
+    await waitFor(() =>
+      expect((slot.getByLabelText("Secret") as HTMLInputElement).value).toBe(
+        ROTATED_SECRET,
+      ),
+    );
+    expect(
+      slot.inspection.rpcCalls.find((call) => call.method === "rotateSecret")?.input,
+    ).toEqual({ botId: "bot_1" });
+    slot.lifecycle.unmount();
+  });
+
+  it("shows the publish banner for a draft bot and keeps the toggle editable", async () => {
+    const panel = await loadPanel();
+    const draft = renderSlot(panel, { subPath: "bot_3/edit" }, { rpc: RPC });
+    await draft.findByText("Publish this bot to activate its webhook.");
+    const toggle = draft.getByLabelText("Enabled") as HTMLInputElement;
+    expect(toggle.disabled).toBe(false);
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(
+        draft.inspection.rpcCalls.find((call) => call.method === "saveHook")?.input,
+      ).toMatchObject({ botId: "bot_3", enabled: true }),
+    );
+    draft.lifecycle.unmount();
+
+    const published = renderSlot(panel, { subPath: "bot_1/edit" }, { rpc: RPC });
+    await published.findByLabelText("Enabled");
+    expect(published.queryByText("Publish this bot to activate its webhook.")).toBeNull();
+    published.lifecycle.unmount();
+  });
+
+  it("copies a curl example that never contains the real secret", async () => {
+    const writeText = stubClipboard();
+    const panel = await loadPanel();
+    const slot = renderSlot(panel, { subPath: "bot_1/edit" }, { rpc: RPC });
+
+    // Load the real secret into the form first, so a leak would show up.
+    fireEvent.click(await slot.findByRole("button", { name: "Reveal" }));
+    await waitFor(() =>
+      expect((slot.getByLabelText("Secret") as HTMLInputElement).value).toBe(REAL_SECRET),
+    );
+
+    fireEvent.click(slot.getByRole("button", { name: "Copy curl example" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const text = writeText.mock.calls.at(-1)![0];
+    expect(text).toContain("URL='http://127.0.0.1:38990/hooks/bot_1'");
+    expect(text).not.toContain("/api/v1/");
+    expect(text).toContain("SECRET='whsec_REPLACE_ME'");
+    expect(text).toContain('-H "X-Hook-Signature: sha256=$SIG"');
+    expect(text).not.toContain(REAL_SECRET);
+    slot.lifecycle.unmount();
+  });
+
+  it("builds the curl example from the initial URL, and disables it without one", async () => {
+    const writeText = stubClipboard();
+    const panel = await loadPanel();
+    const urls = ["https://hooks.you.com/hooks/bot_1", "http://127.0.0.1:38990/hooks/bot_1"];
+    const withUrls = renderSlot(
+      panel,
+      { subPath: "bot_1/edit" },
+      {
+        rpc: {
+          ...RPC,
+          getHook: () => ({ hook: hookState("bot_1", { urls, primaryUrl: urls[0]! }) }),
+        },
+      },
+    );
+    fireEvent.click(await withUrls.findByRole("button", { name: "Copy curl example" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(writeText.mock.calls.at(-1)![0]).toContain("URL='https://hooks.you.com/hooks/bot_1'");
+    withUrls.lifecycle.unmount();
+
+    const none = renderSlot(
+      panel,
+      { subPath: "bot_1/edit" },
+      {
+        rpc: {
+          ...RPC,
+          getHook: () => ({ hook: hookState("bot_1", { urls: [], primaryUrl: null }) }),
+        },
+      },
+    );
+    const button = (await none.findByRole("button", { name: "Copy curl example" })) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(none.getByText(/Add a base URL in Settings/)).toBeTruthy();
+    none.lifecycle.unmount();
   });
 });
